@@ -1,3 +1,9 @@
+"""Application settings and configuration.
+
+Uses Pydantic Settings for environment-based configuration with .env file support.
+All settings can be overridden via environment variables.
+"""
+
 from functools import lru_cache
 
 from pydantic import Field
@@ -5,6 +11,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application configuration loaded from environment variables and .env file.
+
+    Configuration is case-insensitive and loads from .env if present.
+    All fields have sensible defaults for local development.
+    """
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
