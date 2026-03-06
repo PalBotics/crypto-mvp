@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     db_password: str = Field(default="postgres", alias="DB_PASSWORD")
     db_echo: bool = Field(default=False, alias="DB_ECHO")
 
+    collect_exchange: str = Field(default="mock", alias="COLLECT_EXCHANGE")
+    collect_symbol: str = Field(default="BTC-USD", alias="COLLECT_SYMBOL")
+    collect_interval_seconds: int = Field(default=5, alias="COLLECT_INTERVAL_SECONDS")
+
     @property
     def database_url(self) -> str:
         return (
