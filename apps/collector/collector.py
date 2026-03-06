@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from core.config.settings import Settings
 from core.db.session import get_db_session
 from core.exchange import get_exchange_adapter
+from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
 
 
@@ -93,6 +94,52 @@ class MarketDataCollector:
         )
 
         session.add(tick)
+
+        if self.settings.collect_funding:
+            funding = self.adapter.fetch_funding_rate(self.settings.collect_funding_symbol)
+
+            if funding is not None:
+                funding_snapshot = FundingRateSnapshot(
+                    exchange=self.exchange,
+                    adapter_name=self.adapter.name,
+                    symbol=funding.get("symbol", self.settings.collect_funding_symbol),
+                    exchange_symbol=funding.get(
+                        "exchange_symbol",
+                        funding.get("symbol", self.settings.collect_funding_symbol),
+                    ),
+                    funding_rate=Decimal(str(funding["funding_rate"])),
+                    funding_interval_hours=funding.get("funding_interval_hours"),
+                    predicted_funding_rate=(
+                        Decimal(str(funding["predicted_funding_rate"]))
+                        if funding.get("predicted_funding_rate") is not None
+                        else None
+                    ),
+                    mark_price=(
+                        Decimal(str(funding["mark_price"]))
+                        if funding.get("mark_price") is not None
+                        else None
+                    ),
+                    index_price=(
+                        Decimal(str(funding["index_price"]))
+                        if funding.get("index_price") is not None
+                        else None
+                    ),
+                    next_funding_ts=funding.get("next_funding_ts"),
+                    event_ts=funding.get("event_ts", datetime.now(timezone.utc)),
+                    ingested_ts=datetime.now(timezone.utc),
+                )
+
+                session.add(funding_snapshot)
+
+                if self.logger:
+                    self.logger.info(
+                        "funding_rate_collected",
+                        exchange=self.exchange,
+                        symbol=funding_snapshot.symbol,
+                        funding_rate=str(funding_snapshot.funding_rate),
+                        event_ts=funding_snapshot.event_ts.isoformat(),
+                    )
+
         session.commit()
 
         if self.logger:

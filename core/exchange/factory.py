@@ -1,5 +1,6 @@
 """Factory for exchange adapter instantiation."""
 
+from core.exchange.binance_adapter import BinanceAdapter
 from core.exchange.coinbase_adapter import CoinbaseAdapter
 from core.exchange.mock_adapter import MockExchangeAdapter
 from core.exchange.exceptions import ExchangeError
@@ -10,7 +11,7 @@ def get_exchange_adapter(exchange_name: str) -> ExchangeAdapter:
     """Get an exchange adapter instance by name.
 
     Args:
-        exchange_name: Name of the exchange ("mock" or "coinbase", case-insensitive)
+        exchange_name: Name of the exchange ("mock", "coinbase", or "binance", case-insensitive)
 
     Returns:
         Configured exchange adapter instance
@@ -25,5 +26,8 @@ def get_exchange_adapter(exchange_name: str) -> ExchangeAdapter:
     
     if normalized == "coinbase":
         return CoinbaseAdapter()
+
+    if normalized == "binance":
+        return BinanceAdapter()
 
     raise ExchangeError(f"Unsupported exchange adapter: {exchange_name}")

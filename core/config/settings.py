@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     collect_exchange: str = Field(default="mock", alias="COLLECT_EXCHANGE")
     collect_symbol: str = Field(default="BTC-USD", alias="COLLECT_SYMBOL")
     collect_interval_seconds: int = Field(default=5, alias="COLLECT_INTERVAL_SECONDS")
+    collect_funding: bool = Field(default=False, alias="COLLECT_FUNDING")
+    collect_funding_symbol: str = Field(
+        default="BTCUSDT", alias="COLLECT_FUNDING_SYMBOL"
+    )
 
     @property
     def database_url(self) -> str:

@@ -57,7 +57,17 @@ class ExchangeAdapter(ABC):
             symbol: Trading pair symbol
 
         Returns:
-            Funding rate data or None if not applicable
+            Normalized funding payload dict when funding is supported, with keys:
+            symbol, exchange_symbol, funding_rate, funding_interval_hours,
+            predicted_funding_rate, mark_price, index_price, next_funding_ts,
+            event_ts.
+
+            Returns None when the exchange/instrument does not provide funding
+            data (for example, spot-only adapters).
+
+        Raises:
+            ExchangeError (or subclasses): On transport, rate-limit, API, or
+            parsing failures.
         """
 
     @abstractmethod

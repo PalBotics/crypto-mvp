@@ -83,6 +83,39 @@ python -m apps.collector.main
 
 **No API keys required** for market data collection (public endpoints only).
 
+#### Binance Adapter (Funding + Market Data)
+
+Sprint 3 adds Binance USD-M Futures adapter support, including funding-rate
+collection through public endpoints.
+
+```bash
+# .env configuration
+COLLECT_EXCHANGE=binance
+COLLECT_SYMBOL=BTCUSDT
+COLLECT_INTERVAL_SECONDS=5
+
+# Optional funding collection
+COLLECT_FUNDING=true
+COLLECT_FUNDING_SYMBOL=BTCUSDT
+
+# Run collector
+python -m apps.collector.main
+```
+
+### Optional Funding Collection
+
+Funding persistence is optional and disabled by default.
+
+- `COLLECT_FUNDING=false` (default): collect/persist `market_ticks` only
+- `COLLECT_FUNDING=true`: additionally attempt funding collection each cycle
+- `COLLECT_FUNDING_SYMBOL`: derivatives symbol used for funding endpoint calls
+
+Current behavior by adapter:
+
+- `coinbase`: `fetch_funding_rate` returns `None` in current spot flow
+- `mock`: `fetch_funding_rate` returns `None`
+- `binance`: returns normalized funding payload when available
+
 ### Testing
 
 ```bash
