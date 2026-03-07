@@ -110,6 +110,7 @@ class PaperTradingLoop:
                     risk_engine=self._risk_engine,
                     funding_rate=funding_rate,
                     latest_funding_ts=now,
+                    mode=self._strategy.config.mode,
                 ):
                     intents_executed += 1
                     _log.info("intent_executed", iteration=n, count=intents_executed)

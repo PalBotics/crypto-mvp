@@ -28,6 +28,7 @@ def execute_one_paper_market_intent(
     risk_engine: RiskEngine | None = None,
     funding_rate: Decimal = Decimal("0"),
     latest_funding_ts: datetime | None = None,
+    mode: str = "paper",
 ) -> bool:
     """Execute at most one eligible paper market order intent.
 
@@ -37,7 +38,7 @@ def execute_one_paper_market_intent(
     intent = (
         session.execute(
             select(OrderIntent)
-            .where(OrderIntent.mode == "paper")
+            .where(OrderIntent.mode == mode)
             .where(OrderIntent.order_type == "market")
             .where(OrderIntent.status == "pending")
             .order_by(OrderIntent.created_ts.asc())
@@ -80,8 +81,13 @@ def execute_one_paper_market_intent(
             return False
 
     simulator = PaperOrderSimulator(fee_model=fee_model)
+    intent_contract = order_intent_to_contract(intent)
+    if intent_contract.mode.strip().lower() != "paper":
+        # Replay runs use mode as a run identifier; simulator still expects paper mode.
+        intent_contract = replace(intent_contract, mode="paper")
+
     execution = simulator.simulate(
-        order_intent_to_contract(intent),
+        intent_contract,
         market_tick_to_event(tick),
     )
 
@@ -95,7 +101,7 @@ def execute_one_paper_market_intent(
     )
     fill_record = fill_event_to_record(fill_event)
     session.add(fill_record)
-    position_snapshot = update_position_from_fill(session, fill_record, mode="paper")
+    position_snapshot = update_position_from_fill(session, fill_record, mode=mode)
     create_pnl_snapshot_from_fill(
         session=session,
         fill_record=fill_record,
