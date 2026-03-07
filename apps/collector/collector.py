@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
 from core.config.settings import Settings
 from core.db.session import get_db_session
+from core.domain.contracts import FundingEvent, MarketEvent
 from core.exchange import get_exchange_adapter
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
@@ -60,12 +60,23 @@ class MarketDataCollector:
         """
         ticker = self.adapter.fetch_ticker(self.symbol)
 
-        # Safely convert to Decimal with validation
+        # Build a typed market contract from adapter payload.
         try:
-            bid_price = Decimal(str(ticker["bid"]))
-            ask_price = Decimal(str(ticker["ask"]))
-            last_price = Decimal(str(ticker["last"]))
-            mid_price = Decimal(str((ticker["bid"] + ticker["ask"]) / 2))
+            market_event = MarketEvent(
+                exchange=self.exchange,
+                adapter_name=self.adapter.name,
+                symbol=ticker["symbol"],
+                exchange_symbol=ticker["symbol"],
+                bid_price=ticker["bid"],
+                ask_price=ticker["ask"],
+                mid_price=(ticker["bid"] + ticker["ask"]) / 2,
+                last_price=ticker["last"],
+                bid_size=None,
+                ask_size=None,
+                event_ts=ticker["timestamp"],
+                ingested_ts=datetime.now(timezone.utc),
+                sequence_id=None,
+            )
         except (ValueError, KeyError, TypeError) as exc:
             if self.logger:
                 self.logger.error(
@@ -78,19 +89,19 @@ class MarketDataCollector:
             raise
 
         tick = MarketTick(
-            exchange=self.exchange,
-            adapter_name=self.adapter.name,
-            symbol=ticker["symbol"],
-            exchange_symbol=ticker["symbol"],
-            bid_price=bid_price,
-            ask_price=ask_price,
-            mid_price=mid_price,
-            last_price=last_price,
-            bid_size=None,
-            ask_size=None,
-            event_ts=ticker["timestamp"],
-            ingested_ts=datetime.now(timezone.utc),
-            sequence_id=None,
+            exchange=market_event.exchange,
+            adapter_name=market_event.adapter_name,
+            symbol=market_event.symbol,
+            exchange_symbol=market_event.exchange_symbol,
+            bid_price=market_event.bid_price,
+            ask_price=market_event.ask_price,
+            mid_price=market_event.mid_price,
+            last_price=market_event.last_price,
+            bid_size=market_event.bid_size,
+            ask_size=market_event.ask_size,
+            event_ts=market_event.event_ts,
+            ingested_ts=market_event.ingested_ts,
+            sequence_id=market_event.sequence_id,
         )
 
         session.add(tick)
@@ -99,34 +110,40 @@ class MarketDataCollector:
             funding = self.adapter.fetch_funding_rate(self.settings.collect_funding_symbol)
 
             if funding is not None:
-                funding_snapshot = FundingRateSnapshot(
+                funding_symbol = funding.get("symbol", self.settings.collect_funding_symbol)
+                funding_exchange_symbol = funding.get(
+                    "exchange_symbol",
+                    funding_symbol,
+                )
+
+                funding_event = FundingEvent(
                     exchange=self.exchange,
                     adapter_name=self.adapter.name,
-                    symbol=funding.get("symbol", self.settings.collect_funding_symbol),
-                    exchange_symbol=funding.get(
-                        "exchange_symbol",
-                        funding.get("symbol", self.settings.collect_funding_symbol),
-                    ),
-                    funding_rate=Decimal(str(funding["funding_rate"])),
+                    symbol=funding_symbol,
+                    exchange_symbol=funding_exchange_symbol,
+                    funding_rate=funding["funding_rate"],
                     funding_interval_hours=funding.get("funding_interval_hours"),
-                    predicted_funding_rate=(
-                        Decimal(str(funding["predicted_funding_rate"]))
-                        if funding.get("predicted_funding_rate") is not None
-                        else None
-                    ),
-                    mark_price=(
-                        Decimal(str(funding["mark_price"]))
-                        if funding.get("mark_price") is not None
-                        else None
-                    ),
-                    index_price=(
-                        Decimal(str(funding["index_price"]))
-                        if funding.get("index_price") is not None
-                        else None
-                    ),
+                    predicted_funding_rate=funding.get("predicted_funding_rate"),
+                    mark_price=funding.get("mark_price"),
+                    index_price=funding.get("index_price"),
                     next_funding_ts=funding.get("next_funding_ts"),
                     event_ts=funding.get("event_ts", datetime.now(timezone.utc)),
                     ingested_ts=datetime.now(timezone.utc),
+                )
+
+                funding_snapshot = FundingRateSnapshot(
+                    exchange=funding_event.exchange,
+                    adapter_name=funding_event.adapter_name,
+                    symbol=funding_event.symbol,
+                    exchange_symbol=funding_event.exchange_symbol,
+                    funding_rate=funding_event.funding_rate,
+                    funding_interval_hours=funding_event.funding_interval_hours,
+                    predicted_funding_rate=funding_event.predicted_funding_rate,
+                    mark_price=funding_event.mark_price,
+                    index_price=funding_event.index_price,
+                    next_funding_ts=funding_event.next_funding_ts,
+                    event_ts=funding_event.event_ts,
+                    ingested_ts=funding_event.ingested_ts,
                 )
 
                 session.add(funding_snapshot)
