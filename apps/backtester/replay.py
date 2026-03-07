@@ -17,6 +17,7 @@ from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.paper.fees import FixedBpsFeeModel
+from core.reporting.kpi import calculate_kpis
 from core.risk.engine import RiskConfig, RiskEngine
 from core.strategy.funding_capture import FundingCaptureConfig, FundingCaptureStrategy
 
@@ -52,6 +53,11 @@ class ReplaySummary:
     total_funding_paid: Decimal
     start_ts: datetime
     end_ts: datetime
+    annualized_return: Decimal = Decimal("0")
+    max_drawdown: Decimal = Decimal("0")
+    fee_drag: Decimal = Decimal("0")
+    funding_income_captured: Decimal = Decimal("0")
+    missed_opportunity_count: int = 0
 
 
 def _to_decimal(value: object) -> Decimal:
@@ -78,6 +84,24 @@ def _count_fills_for_run(session: Session, run_id: str) -> int:
         .where(OrderIntent.mode == run_id)
     )
     return int(session.execute(stmt).scalar_one())
+
+
+def _initial_capital_from_first_fill(session: Session, run_id: str) -> Decimal:
+    first_fill = (
+        session.execute(
+            select(FillRecord)
+            .select_from(FillRecord)
+            .join(OrderRecord, OrderRecord.id == FillRecord.order_record_id)
+            .join(OrderIntent, OrderIntent.id == OrderRecord.order_intent_id)
+            .where(OrderIntent.mode == run_id)
+            .order_by(FillRecord.fill_ts.asc())
+        )
+        .scalars()
+        .first()
+    )
+    if first_fill is None:
+        return Decimal("0")
+    return _to_decimal(first_fill.fill_price) * _to_decimal(first_fill.fill_qty)
 
 
 def run_replay(session: Session, config: ReplayConfig) -> ReplaySummary:
@@ -191,6 +215,18 @@ def run_replay(session: Session, config: ReplayConfig) -> ReplaySummary:
         ).scalar_one()
     )
 
+    replay_start_ts = snapshots[0].event_ts
+    replay_end_ts = snapshots[-1].event_ts
+    initial_capital = _initial_capital_from_first_fill(session, run_id)
+    kpis = calculate_kpis(
+        session=session,
+        account_name=run_id,
+        start_ts=replay_start_ts,
+        end_ts=replay_end_ts,
+        entry_threshold=config.entry_funding_rate_threshold,
+        initial_capital=initial_capital,
+    )
+
     return ReplaySummary(
         run_id=run_id,
         exchange=config.exchange,
@@ -203,6 +239,11 @@ def run_replay(session: Session, config: ReplayConfig) -> ReplaySummary:
         final_position_quantity=final_position_quantity,
         total_realized_pnl=total_realized_pnl,
         total_funding_paid=total_funding_paid,
-        start_ts=snapshots[0].event_ts,
-        end_ts=snapshots[-1].event_ts,
+        start_ts=replay_start_ts,
+        end_ts=replay_end_ts,
+        annualized_return=kpis.annualized_return,
+        max_drawdown=kpis.max_drawdown,
+        fee_drag=kpis.fee_drag,
+        funding_income_captured=kpis.funding_income_captured,
+        missed_opportunity_count=kpis.missed_opportunity_count,
     )
