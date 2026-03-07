@@ -14,6 +14,8 @@ from core.paper.contracts_adapters import (
     order_record_from_intent_execution,
 )
 from core.paper.fees import FeeModel
+from core.paper.pnl_calculator import create_pnl_snapshot_from_fill
+from core.paper.position_tracker import update_position_from_fill
 from core.paper.simulator import PaperOrderSimulator
 
 
@@ -68,6 +70,13 @@ def execute_one_paper_market_intent(session: Session, fee_model: FeeModel) -> bo
     )
     fill_record = fill_event_to_record(fill_event)
     session.add(fill_record)
+    position_snapshot = update_position_from_fill(session, fill_record, mode="paper")
+    create_pnl_snapshot_from_fill(
+        session=session,
+        fill_record=fill_record,
+        position_snapshot=position_snapshot,
+        mark_price=fill_record.fill_price,
+    )
 
     intent.status = "filled"
     session.commit()
