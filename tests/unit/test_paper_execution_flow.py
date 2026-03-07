@@ -108,7 +108,7 @@ def test_execution_flow_success_persists_records_and_updates_intent() -> None:
     assert pnl_snapshot.realized_pnl == Decimal("0")
 
     assert intent.status == "filled"
-    session.commit.assert_called_once()
+    session.commit.assert_not_called()
 
 
 def test_execution_flow_noop_when_no_eligible_intent() -> None:

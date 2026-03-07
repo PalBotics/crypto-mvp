@@ -2,6 +2,8 @@
     "chat.tools.terminal.autoApprove": {
         "pytest": true,
         "git add": true,
-        "git remote": true
+        "git remote": true,
+        "C:/Users/Paul/Apps/crypto-mvp/.venv/Scripts/python.exe": true,
+        "git commit": true
     }
 }

@@ -74,7 +74,9 @@ def execute_one_paper_market_intent(
         )
         if not result.passed:
             intent.status = "rejected"
-            session.commit()
+            # Keep transaction ownership with caller while making status visible
+            # to subsequent pending-intent queries in autoflush-disabled loops.
+            session.flush()
             return False
 
     simulator = PaperOrderSimulator(fee_model=fee_model)
@@ -102,5 +104,6 @@ def execute_one_paper_market_intent(
     )
 
     intent.status = "filled"
-    session.commit()
+    # Persist all pending writes without committing; caller decides commit/rollback.
+    session.flush()
     return True
