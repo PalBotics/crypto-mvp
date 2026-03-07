@@ -6,6 +6,10 @@
         "C:/Users/Paul/Apps/crypto-mvp/.venv/Scripts/python.exe": true,
         "git commit": true,
         "git push": true,
-        ".vscode/settings.json": true
+        ".vscode/settings.json": true,
+        "/^python -m pytest tests/unit/test_reporting_queries\\.py -v$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }
