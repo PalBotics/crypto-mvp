@@ -102,10 +102,17 @@ DB_NAME=crypto_mvp
 DB_USER=postgres
 DB_PASSWORD=postgres
 
-COLLECT_EXCHANGE=mock
-COLLECT_SYMBOL=BTC-USD
-COLLECT_INTERVAL_SECONDS=5
-COLLECT_FUNDING=false
+COLLECT_INTERVAL_SECONDS=60
+COLLECT_SPOT_EXCHANGE=kraken
+COLLECT_PERP_EXCHANGE=kraken_futures
+COLLECT_SPOT_SYMBOL=XBTUSD
+COLLECT_PERP_SYMBOL=XBTUSD
+COLLECT_SPOT_EXCHANGE_SYMBOL=XXBTZUSD
+COLLECT_PERP_EXCHANGE_SYMBOL=PF_XBTUSD
+COLLECT_ADAPTER_NAME=kraken_rest
+COLLECT_SPOT_BASE_URL=https://api.kraken.com
+COLLECT_FUTURES_BASE_URL=https://futures.kraken.com
+COLLECT_REQUEST_TIMEOUT_SECONDS=10
 ```
 
 ```powershell
@@ -113,21 +120,20 @@ COLLECT_FUNDING=false
 alembic upgrade head
 ```
 
-> **Note:** There is currently no `.env.example` in the repo.  Create `.env`
-> directly using the template above.
+> **Note:** `.env.example` is included in the repo and is the source of truth
+> for supported environment variables.
 
 ## Running the market data collector
 
 ```powershell
-# Mock adapter (no network, deterministic prices — good for dev)
+# Kraken spot + futures REST polling
 python -m apps.collector.main
 
-# Coinbase spot (public endpoints, no API key required)
-# Set in .env: COLLECT_EXCHANGE=coinbase  COLLECT_SYMBOL=BTC-USD
-python -m apps.collector.main
-
-# Binance futures (ticks + funding, public endpoints)
-# Set in .env: COLLECT_EXCHANGE=binance  COLLECT_SYMBOL=BTCUSDT  COLLECT_FUNDING=true
+# Optional override example (PowerShell) for a different symbol pair
+$env:COLLECT_SPOT_SYMBOL="ETHUSD"
+$env:COLLECT_SPOT_EXCHANGE_SYMBOL="XETHZUSD"
+$env:COLLECT_PERP_SYMBOL="ETHUSD"
+$env:COLLECT_PERP_EXCHANGE_SYMBOL="PF_ETHUSD"
 python -m apps.collector.main
 ```
 
