@@ -11,5 +11,17 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  collector:
+    build:
+      context: .
+    command: python -m apps.collector.main
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    volumes:
+      - ./:/app
+
 volumes:
   postgres_data:
