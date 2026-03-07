@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,9 +19,16 @@ from core.paper.fees import FeeModel
 from core.paper.pnl_calculator import create_pnl_snapshot_from_fill
 from core.paper.position_tracker import update_position_from_fill
 from core.paper.simulator import PaperOrderSimulator
+from core.risk.engine import RiskEngine
 
 
-def execute_one_paper_market_intent(session: Session, fee_model: FeeModel) -> bool:
+def execute_one_paper_market_intent(
+    session: Session,
+    fee_model: FeeModel,
+    risk_engine: RiskEngine | None = None,
+    funding_rate: Decimal = Decimal("0"),
+    latest_funding_ts: datetime | None = None,
+) -> bool:
     """Execute at most one eligible paper market order intent.
 
     Returns:
@@ -53,6 +62,20 @@ def execute_one_paper_market_intent(session: Session, fee_model: FeeModel) -> bo
 
     if tick is None:
         return False
+
+    if risk_engine is not None:
+        _funding_ts = latest_funding_ts if latest_funding_ts is not None else datetime.now(timezone.utc)
+        result = risk_engine.check(
+            session=session,
+            order_intent=intent,
+            funding_rate=funding_rate,
+            mark_price=Decimal(str(tick.ask_price)),
+            latest_funding_ts=_funding_ts,
+        )
+        if not result.passed:
+            intent.status = "rejected"
+            session.commit()
+            return False
 
     simulator = PaperOrderSimulator(fee_model=fee_model)
     execution = simulator.simulate(
