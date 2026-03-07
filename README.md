@@ -1,138 +1,202 @@
 # crypto-mvp
 
-Modular crypto automation platform MVP.
+Modular crypto automation platform MVP implementing a funding-rate capture
+strategy with paper trading, a read-only dashboard API, and a pre-trade risk
+engine.  No real capital is used.  Live order execution is explicitly deferred.
 
-## Quick Start
+## What the system does
+
+- **Collects** live market ticks and perpetual funding-rate snapshots from
+  Coinbase (spot), Binance (futures), or a deterministic mock adapter.
+- **Papers trades** a delta-neutral funding-capture pair (spot long + perp
+  short) governed by configurable funding-rate thresholds.
+- **Enforces** four hard pre-trade risk checks (kill switch, stale data,
+  funding edge, max notional) and logs every block as a `RiskEvent`.
+- **Accrues** funding payments each iteration for any open perpetual position.
+- **Evaluates** four post-iteration alert conditions (stale data, PnL
+  drawdown, no-fill, low funding edge) and logs critical ones as `RiskEvent`
+  rows before the iteration commits.
+- **Exposes** a read-only FastAPI dashboard over HTTP with six endpoints.
+- **Never** places a real order on any exchange.
+
+## What is not yet built
+
+- Live order execution (no real exchange API calls)
+- Backtesting and replay against historical data (`apps/backtester/` stub only)
+- Frontend / UI (dashboard is JSON API only)
+- Multi-exchange simultaneous runs
+- Max daily loss limit, circuit breaker, emergency-flatten, hedge-leg mismatch
+  detection (see `RISK_POLICY.md`)
+- Signal aggregation across multiple strategies
+- `apps/strategy_engine/` (stub only — strategy runs inside `PaperTradingLoop`)
+
+## Repository structure
+
+```
+crypto-mvp/
+├── apps/
+│   ├── collector/       # Market data collector — ticks + funding snapshots
+│   ├── paper_trader/    # PaperTradingLoop orchestrator (strategy + risk + alerts)
+│   ├── execution_engine/# Thin wrapper for one-shot paper intent execution
+│   ├── dashboard/       # FastAPI read-only HTTP API (6 endpoints)
+│   ├── strategy_engine/ # Stub — empty
+│   └── backtester/      # Stub — empty
+├── core/
+│   ├── alerting/        # AlertEvaluator — 4 post-iteration alert conditions
+│   ├── app/             # bootstrap_app() — settings + logging + DB check
+│   ├── config/          # Pydantic-settings, .env loading
+│   ├── db/              # SQLAlchemy engine, session factory
+│   ├── domain/          # Typed contracts (MarketEvent, FillEvent) + normalizers
+│   ├── exchange/        # ExchangeAdapter ABC + mock / Coinbase / Binance impls
+│   ├── models/          # SQLAlchemy ORM models (11 tables)
+│   ├── paper/           # Paper trading domain: simulator, position, PnL, fees,
+│   │                    #   funding accrual, execution flow, contract adapters
+│   ├── reporting/       # Read-only query functions (5 functions, 6 row types)
+│   ├── risk/            # RiskEngine — 4 pre-trade hard checks
+│   ├── strategy/        # FundingCaptureStrategy
+│   └── utils/           # Logging, time helpers, UUID generation
+├── migrations/          # Alembic migration scripts
+│   └── versions/        # 2 chained migration files
+├── tests/
+│   ├── unit/            # 164 unit tests (pytest, SQLite in-memory)
+│   └── integration/     # Integration tests (Coinbase live, DB connection)
+├── alembic.ini
+├── docker-compose.yml   # PostgreSQL 16 on port 5432
+└── pyproject.toml
+```
+
+## Environment setup
 
 ### Prerequisites
 
 - Python 3.12+
-- PostgreSQL 16
-- Docker (for local PostgreSQL)
+- Docker (for PostgreSQL)
 
-### Setup
+### Steps
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/palbotics/crypto-mvp.git
-   cd crypto-mvp
-   ```
+```powershell
+# 1. Clone
+git clone https://github.com/palbotics/crypto-mvp.git
+cd crypto-mvp
 
-2. **Create virtual environment**
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1  # Windows
-   source .venv/bin/activate    # Linux/Mac
-   ```
+# 2. Create virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1          # Windows PowerShell
+# source .venv/bin/activate         # Linux / macOS
 
-3. **Install dependencies**
-   ```bash
-   pip install -e .
-   pip install -e ".[dev]"  # Include dev dependencies
-   ```
+# 3. Install dependencies
+pip install -e ".[dev]"
 
-4. **Start PostgreSQL**
-   ```bash
-   docker compose up -d
-   ```
+# 4. Start PostgreSQL
+docker compose up -d
 
-5. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env as needed
-   ```
+# 5. Create a .env file (all fields have defaults; override as needed)
+# Minimum viable .env for local development:
+```
 
-6. **Run migrations**
-   ```bash
-   alembic upgrade head
-   ```
+```ini
+# .env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=crypto_mvp
+DB_USER=postgres
+DB_PASSWORD=postgres
 
-### Running the Collector
-
-The market data collector supports multiple exchange adapters.
-
-#### Mock Adapter (Testing)
-
-```bash
-# .env configuration
 COLLECT_EXCHANGE=mock
 COLLECT_SYMBOL=BTC-USD
 COLLECT_INTERVAL_SECONDS=5
+COLLECT_FUNDING=false
+```
 
-# Run collector
+```powershell
+# 6. Apply database migrations
+alembic upgrade head
+```
+
+> **Note:** There is currently no `.env.example` in the repo.  Create `.env`
+> directly using the template above.
+
+## Running the market data collector
+
+```powershell
+# Mock adapter (no network, deterministic prices — good for dev)
+python -m apps.collector.main
+
+# Coinbase spot (public endpoints, no API key required)
+# Set in .env: COLLECT_EXCHANGE=coinbase  COLLECT_SYMBOL=BTC-USD
+python -m apps.collector.main
+
+# Binance futures (ticks + funding, public endpoints)
+# Set in .env: COLLECT_EXCHANGE=binance  COLLECT_SYMBOL=BTCUSDT  COLLECT_FUNDING=true
 python -m apps.collector.main
 ```
 
-#### Coinbase Adapter (Live Data)
+## Running the paper trading loop
 
-Sprint 2 implementation includes Coinbase Advanced Trade API support using public endpoints.
+The paper trading loop runs `N` iterations of: evaluate strategy → execute
+pending intents → accrue funding → evaluate alerts → commit.
 
-```bash
-# .env configuration
-COLLECT_EXCHANGE=coinbase
-COLLECT_SYMBOL=BTC-USD
-COLLECT_INTERVAL_SECONDS=5
-
-# Run collector
-python -m apps.collector.main
+```powershell
+python -m apps.paper_trader.main
 ```
 
-**Supported Coinbase symbols:** BTC-USD, ETH-USD, SOL-USD, etc. (any valid Coinbase product ID)
+The loop is configured inline in `apps/paper_trader/main.py`:
+- `spot_symbol`, `perp_symbol`, `exchange`
+- `entry_funding_rate_threshold`, `exit_funding_rate_threshold`
+- `position_size`
+- `iterations` (default: 1 — one iteration per invocation)
 
-**Note:** Coinbase public endpoints have rate limits (~10 req/sec). The default 5-second interval is well within limits.
+Before running, the database must have at least one `MarketTick` row for the
+configured symbol (the paper simulator uses the last tick as fill price).
 
-**No API keys required** for market data collection (public endpoints only).
+## Running a replay
 
-#### Binance Adapter (Funding + Market Data)
+Replay is not yet implemented.  `apps/backtester/main.py` is an empty stub.
+The domain layer is designed to support it via the `mode` parameter (which
+doubles as `account_name` / `run_id`), but no replay runner exists.
 
-Sprint 3 adds Binance USD-M Futures adapter support, including funding-rate
-collection through public endpoints.
+## Starting the dashboard API
 
-```bash
-# .env configuration
-COLLECT_EXCHANGE=binance
-COLLECT_SYMBOL=BTCUSDT
-COLLECT_INTERVAL_SECONDS=5
-
-# Optional funding collection
-COLLECT_FUNDING=true
-COLLECT_FUNDING_SYMBOL=BTCUSDT
-
-# Run collector
-python -m apps.collector.main
+```powershell
+uvicorn apps.dashboard.main:app --reload
 ```
 
-### Optional Funding Collection
+Available endpoints (all read-only, all return JSON):
 
-Funding persistence is optional and disabled by default.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Liveness check |
+| GET | `/runs/{account_name}/summary` | Aggregated run summary |
+| GET | `/runs/{account_name}/positions` | Open positions |
+| GET | `/runs/{account_name}/pnl` | PnL summary |
+| GET | `/runs/{account_name}/fills` | Recent fills (default 20, max 100) |
+| GET | `/runs/{account_name}/risk-events` | Risk events (default 50, max 200) |
 
-- `COLLECT_FUNDING=false` (default): collect/persist `market_ticks` only
-- `COLLECT_FUNDING=true`: additionally attempt funding collection each cycle
-- `COLLECT_FUNDING_SYMBOL`: derivatives symbol used for funding endpoint calls
+`account_name` matches the `mode` field used when creating `OrderIntent` rows
+(e.g., `"paper"` for the default paper trading run).
 
-Current behavior by adapter:
+Interactive docs: `http://localhost:8000/docs`
 
-- `coinbase`: `fetch_funding_rate` returns `None` in current spot flow
-- `mock`: `fetch_funding_rate` returns `None`
-- `binance`: returns normalized funding payload when available
+## Running the test suite
 
-### Testing
+```powershell
+# All tests (164 unit tests as of Sprint 15)
+.venv\Scripts\python.exe -m pytest tests/unit/ -v
 
-```bash
-# Run all tests
-pytest
+# With coverage
+.venv\Scripts\python.exe -m pytest tests/unit/ --cov=core --cov=apps
 
-# Run unit tests only
-pytest tests/unit/ -v
-
-# Run with coverage
-pytest --cov=core --cov=apps
+# Integration tests (require PostgreSQL and optional live network)
+.venv\Scripts\python.exe -m pytest tests/integration/ -v
 ```
 
-### Development
+Unit tests use an in-memory SQLite database and do not require PostgreSQL.
+Integration tests require a running PostgreSQL instance.
 
-```bash
-# Lint code
+## Development tools
+
+```powershell
+# Lint
 ruff check .
 
 # Type check
@@ -141,77 +205,6 @@ mypy core/ apps/
 # Format check
 ruff format --check .
 ```
-
-## Project Structure
-
-```
-crypto-mvp/
-├── apps/               # Service entrypoints
-│   ├── collector/      # Market data collector
-│   ├── strategy_engine/
-│   ├── execution_engine/
-│   ├── backtester/
-│   └── dashboard/
-├── core/               # Shared core functionality
-│   ├── config/         # Settings and configuration
-│   ├── db/             # Database session management
-│   ├── exchange/       # Exchange adapter interfaces
-│   ├── models/         # SQLAlchemy ORM models
-│   ├── risk/           # Risk management
-│   └── utils/          # Utilities
-├── migrations/         # Alembic database migrations
-└── tests/              # Test suite
-```
-
-## Smoke Testing Coinbase Integration
-
-To validate the Coinbase adapter with live data:
-
-1. **Ensure database is running:**
-   ```bash
-   docker compose up -d
-   ```
-
-2. **Update `.env`:**
-   ```
-   COLLECT_EXCHANGE=coinbase
-   COLLECT_SYMBOL=BTC-USD
-   COLLECT_INTERVAL_SECONDS=5
-   ```
-
-3. **Run collector for 30-60 seconds:**
-   ```bash
-   python -m apps.collector.main
-   # Press Ctrl+C to stop
-   ```
-
-4. **Verify data in PostgreSQL:**
-   ```bash
-   docker exec -it crypto-mvp-postgres psql -U postgres -d crypto_mvp
-   ```
-   ```sql
-   SELECT 
-     exchange, 
-     symbol, 
-     bid_price, 
-     ask_price, 
-     event_ts 
-   FROM market_ticks 
-   WHERE exchange = 'coinbase' 
-   ORDER BY event_ts DESC 
-   LIMIT 10;
-   ```
-
-**Expected behavior:**
-- Collector logs show `exchange=coinbase`
-- New rows appear in `market_ticks` table every 5 seconds
-- `bid_price`, `ask_price`, `last_price` contain realistic BTC prices
-- No errors or connection issues
-
-**Troubleshooting:**
-- If you see connection errors, check your internet connection
-- If you see rate limit errors (HTTP 429), increase `COLLECT_INTERVAL_SECONDS`
-- Logs are structured JSON in production, readable console output in development
 
 ## License
 
