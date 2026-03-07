@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from core.alerting.evaluator import AlertEvaluator
 from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
@@ -53,6 +54,7 @@ class PaperTradingLoop:
         fee_model: FeeModel,
         iterations: int,
         market_data: list[tuple[Decimal, Decimal]] | None = None,
+        alert_evaluator: AlertEvaluator | None = None,
     ) -> None:
         self._session = session
         self._strategy = strategy
@@ -60,6 +62,7 @@ class PaperTradingLoop:
         self._fee_model = fee_model
         self._iterations = iterations
         self._market_data: list[tuple[Decimal, Decimal]] = market_data or []
+        self._alert_evaluator = alert_evaluator
 
     def run(self) -> list[IterationSummary]:
         """Run all iterations and return one IterationSummary per iteration."""
@@ -136,7 +139,19 @@ class PaperTradingLoop:
             else:
                 _log.info("funding_skipped", iteration=n, reason="no_open_position")
 
-            # 5. Commit all iteration changes atomically.
+            # 5. Evaluate alerts (if configured) before committing.
+            if self._alert_evaluator is not None:
+                alert_results = self._alert_evaluator.evaluate(self._session)
+                for result in alert_results:
+                    _log.warning(
+                        "alert_result",
+                        iteration=n,
+                        alert_type=result.alert_type,
+                        severity=result.severity,
+                        message=result.message,
+                    )
+
+            # 6. Commit all iteration changes atomically.
             self._session.commit()
 
             summary = IterationSummary(
