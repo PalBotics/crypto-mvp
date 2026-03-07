@@ -1,4 +1,5 @@
 from core.models.fill_record import FillRecord
+from core.models.funding_payment import FundingPayment
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
 from core.models.order_intent import OrderIntent
@@ -11,6 +12,7 @@ from core.models.system_event import SystemEvent
 
 __all__ = [
     "FillRecord",
+    "FundingPayment",
     "FundingRateSnapshot",
     "MarketTick",
     "OrderIntent",
