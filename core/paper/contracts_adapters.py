@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from core.domain.contracts import FillEvent, MarketEvent, OrderIntentContract
 from core.models.fill_record import FillRecord
 from core.models.market_tick import MarketTick
 from core.models.order_intent import OrderIntent
+from core.models.order_record import OrderRecord
 from core.paper.simulator import PaperExecutionResult
 
 
@@ -110,4 +111,42 @@ def order_record_update_from_execution(
         updated_ts=execution.fill_ts,
         fee_asset=execution.fill_event.fee_asset,
         submitted_price=None,
+    )
+
+
+def build_paper_exchange_order_id(order_intent: OrderIntent) -> str:
+    """Build a deterministic synthetic paper exchange order ID."""
+    if order_intent.id is None:
+        return f"paper-noid-{order_intent.created_ts.strftime('%Y%m%d%H%M%S')}"
+
+    return f"paper-{order_intent.id}"
+
+
+def order_record_from_intent_execution(
+    order_intent: OrderIntent,
+    execution: PaperExecutionResult,
+    exchange_order_id: str | None = None,
+) -> OrderRecord:
+    """Create an OrderRecord ORM instance from intent and execution result."""
+    update = order_record_update_from_execution(execution)
+
+    return OrderRecord(
+        id=uuid4(),
+        order_intent_id=order_intent.id,
+        exchange=order_intent.exchange,
+        symbol=order_intent.symbol,
+        exchange_order_id=exchange_order_id or build_paper_exchange_order_id(order_intent),
+        client_order_id=order_intent.client_order_id,
+        side=order_intent.side,
+        order_type=order_intent.order_type,
+        status=update.status,
+        submitted_price=update.submitted_price,
+        submitted_qty=update.submitted_qty,
+        filled_qty=update.filled_qty,
+        avg_fill_price=update.avg_fill_price,
+        fees_paid=update.fees_paid,
+        fee_asset=update.fee_asset,
+        created_ts=update.created_ts,
+        updated_ts=update.updated_ts,
+        raw_exchange_payload={"paper": True, "simulated": True},
     )

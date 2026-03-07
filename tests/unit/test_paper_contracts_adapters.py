@@ -6,9 +6,11 @@ from core.domain.contracts import FillEvent
 from core.models.market_tick import MarketTick
 from core.models.order_intent import OrderIntent
 from core.paper.contracts_adapters import (
+    build_paper_exchange_order_id,
     fill_event_to_record,
     market_tick_to_event,
     order_intent_to_contract,
+    order_record_from_intent_execution,
     order_record_update_from_execution,
 )
 from core.paper.fees import FixedBpsFeeModel
@@ -177,3 +179,86 @@ def test_order_record_update_helper_for_filled_market_order() -> None:
     assert update.created_ts == intent.created_ts
     assert update.updated_ts == tick.event_ts
     assert update.submitted_price is None
+
+
+def test_build_paper_exchange_order_id_uses_intent_id() -> None:
+    intent = OrderIntent(
+        id=uuid4(),
+        strategy_signal_id=None,
+        portfolio_id=None,
+        mode="paper",
+        exchange="coinbase",
+        symbol="BTC-USD",
+        side="buy",
+        order_type="market",
+        time_in_force=None,
+        quantity=Decimal("1"),
+        limit_price=None,
+        reduce_only=False,
+        post_only=False,
+        client_order_id="cid-3",
+        status="pending",
+        created_ts=datetime(2026, 3, 6, 12, 0, tzinfo=timezone.utc),
+    )
+
+    exchange_order_id = build_paper_exchange_order_id(intent)
+
+    assert exchange_order_id == f"paper-{intent.id}"
+
+
+def test_order_record_from_intent_execution_maps_expected_fields() -> None:
+    simulator = PaperOrderSimulator(fee_model=FixedBpsFeeModel(bps=Decimal("10")))
+
+    intent = OrderIntent(
+        id=uuid4(),
+        strategy_signal_id=None,
+        portfolio_id=None,
+        mode="paper",
+        exchange="coinbase",
+        symbol="BTC-USD",
+        side="sell",
+        order_type="market",
+        time_in_force=None,
+        quantity=Decimal("2"),
+        limit_price=None,
+        reduce_only=False,
+        post_only=False,
+        client_order_id="cid-4",
+        status="pending",
+        created_ts=datetime(2026, 3, 6, 11, 59, tzinfo=timezone.utc),
+    )
+
+    tick = MarketTick(
+        exchange="coinbase",
+        adapter_name="coinbase",
+        symbol="BTC-USD",
+        exchange_symbol="BTC-USD",
+        bid_price=Decimal("50000"),
+        ask_price=Decimal("50010"),
+        mid_price=Decimal("50005"),
+        last_price=Decimal("50006"),
+        bid_size=None,
+        ask_size=None,
+        event_ts=datetime(2026, 3, 6, 12, 0, tzinfo=timezone.utc),
+        ingested_ts=datetime(2026, 3, 6, 12, 0, tzinfo=timezone.utc),
+        sequence_id=None,
+    )
+
+    execution = simulator.simulate(order_intent_to_contract(intent), market_tick_to_event(tick))
+    record = order_record_from_intent_execution(intent, execution)
+
+    assert record.order_intent_id == intent.id
+    assert record.exchange == intent.exchange
+    assert record.symbol == intent.symbol
+    assert record.client_order_id == intent.client_order_id
+    assert record.side == intent.side
+    assert record.order_type == intent.order_type
+    assert record.status == "filled"
+    assert record.submitted_price is None
+    assert record.submitted_qty == Decimal("2")
+    assert record.filled_qty == Decimal("2")
+    assert record.avg_fill_price == Decimal("50000")
+    assert record.fees_paid == Decimal("100")
+    assert record.created_ts == intent.created_ts
+    assert record.updated_ts == tick.event_ts
+    assert record.raw_exchange_payload == {"paper": True, "simulated": True}
