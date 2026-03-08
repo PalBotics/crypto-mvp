@@ -3,6 +3,7 @@ from core.models.funding_payment import FundingPayment
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
 from core.models.order_intent import OrderIntent
+from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
@@ -16,6 +17,7 @@ __all__ = [
     "FundingRateSnapshot",
     "MarketTick",
     "OrderIntent",
+    "OrderBookSnapshot",
     "OrderRecord",
     "PnLSnapshot",
     "PositionSnapshot",

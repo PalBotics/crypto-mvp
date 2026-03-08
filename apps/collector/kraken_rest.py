@@ -8,6 +8,7 @@ import httpx
 
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
+from core.models.order_book_snapshot import OrderBookSnapshot
 
 
 class CollectorError(RuntimeError):
@@ -86,6 +87,80 @@ class KrakenRestAdapter:
         if not isinstance(tickers, list):
             raise CollectorError("Kraken futures API payload missing 'tickers' list")
         return tickers
+
+    def fetch_order_book(self) -> dict:
+        url = f"{self._config.spot_base_url}/0/public/Depth"
+        response = httpx.get(
+            url,
+            params={"pair": self._config.spot_symbol, "count": 3},
+            timeout=self._config.request_timeout_seconds,
+        )
+        if response.status_code != 200:
+            raise CollectorError(f"Kraken order book HTTP status {response.status_code}")
+
+        payload = response.json()
+        errors = payload.get("error", [])
+        if errors:
+            raise CollectorError(f"Kraken order book API error: {errors}")
+        if "result" not in payload:
+            raise CollectorError("Kraken order book API payload missing 'result'")
+        return payload
+
+    def parse_order_book_snapshot(self, raw: dict) -> OrderBookSnapshot:
+        result = raw["result"]
+        book = result[self._config.spot_exchange_symbol]
+        bids = book.get("bids", [])
+        asks = book.get("asks", [])
+
+        if len(bids) == 0 or len(asks) == 0:
+            raise CollectorError("Kraken order book payload missing top-of-book bids/asks")
+
+        def _level(levels: list, idx: int) -> tuple[Decimal | None, Decimal | None]:
+            if idx >= len(levels):
+                return None, None
+            row = levels[idx]
+            if not isinstance(row, list) or len(row) < 2:
+                return None, None
+            return _to_decimal(row[0]), _to_decimal(row[1])
+
+        bid_price_1, bid_size_1 = _level(bids, 0)
+        ask_price_1, ask_size_1 = _level(asks, 0)
+        if bid_price_1 is None or bid_size_1 is None or ask_price_1 is None or ask_size_1 is None:
+            raise CollectorError("Kraken order book payload missing valid level-1 bids/asks")
+
+        bid_price_2, bid_size_2 = _level(bids, 1)
+        ask_price_2, ask_size_2 = _level(asks, 1)
+        bid_price_3, bid_size_3 = _level(bids, 2)
+        ask_price_3, ask_size_3 = _level(asks, 2)
+
+        spread = ask_price_1 - bid_price_1
+        mid_price = (bid_price_1 + ask_price_1) / Decimal("2")
+        spread_bps = (spread / mid_price * Decimal("10000")) if mid_price != 0 else None
+        now_utc = datetime.now(timezone.utc)
+
+        return OrderBookSnapshot(
+            exchange=self._config.spot_exchange,
+            adapter_name=self._config.adapter_name,
+            symbol=self._config.spot_symbol,
+            exchange_symbol=self._config.spot_exchange_symbol,
+            bid_price_1=bid_price_1,
+            bid_size_1=bid_size_1,
+            ask_price_1=ask_price_1,
+            ask_size_1=ask_size_1,
+            bid_price_2=bid_price_2,
+            bid_size_2=bid_size_2,
+            ask_price_2=ask_price_2,
+            ask_size_2=ask_size_2,
+            bid_price_3=bid_price_3,
+            bid_size_3=bid_size_3,
+            ask_price_3=ask_price_3,
+            ask_size_3=ask_size_3,
+            spread=spread,
+            spread_bps=spread_bps,
+            mid_price=mid_price,
+            event_ts=now_utc,
+            ingested_ts=now_utc,
+        )
 
     def parse_spot_tick(self, raw: dict) -> MarketTick:
         result = raw.get("result", {})

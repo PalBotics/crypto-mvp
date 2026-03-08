@@ -48,6 +48,26 @@ def _adapter() -> KrakenRestAdapter:
     return KrakenRestAdapter(CollectorConfig())
 
 
+def _order_book_fixture() -> dict:
+    return {
+        "error": [],
+        "result": {
+            "XXBTZUSD": {
+                "bids": [
+                    ["29100.10", "1.25000000", 1704067200],
+                    ["29100.00", "0.50000000", 1704067200],
+                    ["29099.90", "0.75000000", 1704067200],
+                ],
+                "asks": [
+                    ["29100.30", "1.10000000", 1704067200],
+                    ["29100.40", "0.40000000", 1704067200],
+                    ["29100.50", "0.90000000", 1704067200],
+                ],
+            }
+        },
+    }
+
+
 def test_parse_spot_tick_maps_fields_correctly() -> None:
     adapter = _adapter()
     tick = adapter.parse_spot_tick(_spot_fixture())
@@ -162,3 +182,70 @@ def test_fetch_futures_tickers_returns_list(monkeypatch) -> None:
 
     assert isinstance(tickers, list)
     assert tickers[0]["symbol"] == "PF_XBTUSD"
+
+
+def test_fetch_order_book_raises_on_non_200(monkeypatch) -> None:
+    def _fake_get(*_args, **_kwargs):
+        return _FakeResponse(status_code=500, payload={})
+
+    monkeypatch.setattr("apps.collector.kraken_rest.httpx.get", _fake_get)
+
+    adapter = _adapter()
+    with pytest.raises(CollectorError):
+        adapter.fetch_order_book()
+
+
+def test_parse_order_book_snapshot_maps_fields_correctly() -> None:
+    adapter = _adapter()
+
+    snapshot = adapter.parse_order_book_snapshot(_order_book_fixture())
+
+    assert snapshot.exchange == "kraken"
+    assert snapshot.symbol == "XBTUSD"
+    assert isinstance(snapshot.bid_price_1, Decimal)
+    assert isinstance(snapshot.ask_price_1, Decimal)
+    assert snapshot.spread == snapshot.ask_price_1 - snapshot.bid_price_1
+    assert snapshot.mid_price == (snapshot.bid_price_1 + snapshot.ask_price_1) / Decimal("2")
+    assert isinstance(snapshot.spread_bps, Decimal)
+    assert snapshot.event_ts.tzinfo is not None
+    assert snapshot.event_ts.tzinfo == timezone.utc
+
+
+def test_parse_order_book_snapshot_level_2_and_3_populated() -> None:
+    adapter = _adapter()
+
+    snapshot = adapter.parse_order_book_snapshot(_order_book_fixture())
+
+    assert isinstance(snapshot.bid_price_2, Decimal)
+    assert isinstance(snapshot.ask_price_2, Decimal)
+    assert isinstance(snapshot.bid_price_3, Decimal)
+    assert isinstance(snapshot.ask_price_3, Decimal)
+
+
+def test_parse_order_book_snapshot_all_prices_are_decimal() -> None:
+    adapter = _adapter()
+
+    snapshot = adapter.parse_order_book_snapshot(_order_book_fixture())
+
+    fields = [
+        snapshot.bid_price_1,
+        snapshot.bid_size_1,
+        snapshot.ask_price_1,
+        snapshot.ask_size_1,
+        snapshot.bid_price_2,
+        snapshot.bid_size_2,
+        snapshot.ask_price_2,
+        snapshot.ask_size_2,
+        snapshot.bid_price_3,
+        snapshot.bid_size_3,
+        snapshot.ask_price_3,
+        snapshot.ask_size_3,
+        snapshot.spread,
+        snapshot.spread_bps,
+        snapshot.mid_price,
+    ]
+
+    for value in fields:
+        if value is not None:
+            assert isinstance(value, Decimal)
+            assert not isinstance(value, float)

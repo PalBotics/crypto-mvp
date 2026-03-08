@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from apps.collector.kraken_rest import CollectorConfig, CollectorError, KrakenRestAdapter
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
+from core.models.order_book_snapshot import OrderBookSnapshot
 from core.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -59,6 +60,7 @@ class CollectorLoop:
     def _poll_once(self, session: Session) -> None:
         try:
             spot_raw = self._adapter.fetch_spot_ticker()
+            order_book_raw = self._adapter.fetch_order_book()
             futures_tickers = self._adapter.fetch_futures_tickers()
 
             perp_raw = next(
@@ -75,11 +77,13 @@ class CollectorLoop:
                 )
 
             spot_tick = self._adapter.parse_spot_tick(spot_raw)
+            order_book_snapshot = self._adapter.parse_order_book_snapshot(order_book_raw)
             perp_tick = self._adapter.parse_perp_tick(perp_raw)
             funding_snapshot = self._adapter.parse_funding_snapshot(perp_raw)
 
             inserted_ticks = 0
             inserted_funding = 0
+            inserted_order_book = 0
 
             for tick in (spot_tick, perp_tick):
                 exists = session.execute(
@@ -104,6 +108,17 @@ class CollectorLoop:
                 session.add(funding_snapshot)
                 inserted_funding += 1
 
+            order_book_exists = session.execute(
+                select(OrderBookSnapshot).where(
+                    OrderBookSnapshot.exchange == order_book_snapshot.exchange,
+                    OrderBookSnapshot.symbol == order_book_snapshot.symbol,
+                    OrderBookSnapshot.event_ts == order_book_snapshot.event_ts,
+                )
+            ).first()
+            if order_book_exists is None:
+                session.add(order_book_snapshot)
+                inserted_order_book += 1
+
             session.commit()
 
             _log.info(
@@ -115,8 +130,10 @@ class CollectorLoop:
                 perp_bid=str(perp_tick.bid_price),
                 perp_ask=str(perp_tick.ask_price),
                 funding_rate=str(funding_snapshot.funding_rate),
+                spread=str(order_book_snapshot.spread),
                 inserted_market_ticks=inserted_ticks,
                 inserted_funding_snapshots=inserted_funding,
+                inserted_order_book_snapshots=inserted_order_book,
                 cycle_ts=datetime.now(timezone.utc).isoformat(),
             )
         except Exception as exc:
