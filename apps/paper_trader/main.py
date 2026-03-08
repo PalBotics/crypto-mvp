@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 import os
+import signal
+import time
 
+from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -108,7 +111,7 @@ class PaperTradingLoop:
         )
         try:
             if self._strategy_mode == "market_making":
-                signal_result, intents_executed, payment = self._run_iteration_market_making(
+                signal_result, intents_executed, payment = self.run_one_iteration_market_making(
                     n=n,
                     funding_rate=funding_rate,
                     mark_price=mark_price,
@@ -217,7 +220,7 @@ class PaperTradingLoop:
 
         return signal_result, intents_executed, payment
 
-    def _run_iteration_market_making(
+    def run_one_iteration_market_making(
         self,
         n: int,
         funding_rate: Decimal,
@@ -311,6 +314,8 @@ def main() -> None:
     from core.strategy.funding_capture import FundingCaptureConfig
     from core.strategy.market_making import MarketMakingConfig
 
+    load_dotenv()
+
     ctx = bootstrap_app(service_name="paper_trader", check_db=True)
     session = get_db_session()
     paper_strategy = os.environ.get("PAPER_STRATEGY", "funding_capture").strip().lower()
@@ -359,18 +364,58 @@ def main() -> None:
         market_making_config=mm_config,
     )
 
-    try:
-        summaries = loop.run()
-        for s in summaries:
-            ctx.logger.info(
-                "iteration_summary",
-                iteration=s.iteration,
-                signal=s.signal_result,
-                intents_executed=s.intents_executed,
-                funding_payment=str(s.funding_payment_amount),
-            )
-    finally:
-        session.close()
+    if paper_strategy == "market_making":
+        loop_interval_seconds = int(os.environ.get("LOOP_INTERVAL_SECONDS", "60"))
+        running = True
+        iteration = 0
+
+        def _handle_sigterm(signum, _frame) -> None:  # type: ignore[no-untyped-def]
+            nonlocal running
+            ctx.logger.info("paper_trader_signal_received", signal=signum)
+            running = False
+
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+
+        try:
+            while running:
+                iteration += 1
+                try:
+                    signal_result, intents_executed, _payment = loop.run_one_iteration_market_making(
+                        n=iteration,
+                        funding_rate=Decimal("0"),
+                        mark_price=Decimal("0"),
+                    )
+                    session.commit()
+                    ctx.logger.info(
+                        "iteration_summary",
+                        iteration=iteration,
+                        signal=signal_result,
+                        intents_executed=intents_executed,
+                        funding_payment=str(None),
+                    )
+                except Exception as exc:
+                    session.rollback()
+                    ctx.logger.error("iteration_failed", iteration=iteration, error=str(exc))
+                if running:
+                    time.sleep(loop_interval_seconds)
+        except KeyboardInterrupt:
+            ctx.logger.info("paper_trader_keyboard_interrupt_received")
+        finally:
+            session.close()
+    else:
+        try:
+            summaries = loop.run()
+            for s in summaries:
+                ctx.logger.info(
+                    "iteration_summary",
+                    iteration=s.iteration,
+                    signal=s.signal_result,
+                    intents_executed=s.intents_executed,
+                    funding_payment=str(s.funding_payment_amount),
+                )
+        finally:
+            session.close()
 
 
 if __name__ == "__main__":

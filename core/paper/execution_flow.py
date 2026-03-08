@@ -95,6 +95,8 @@ def execute_one_paper_market_intent(
 
     order_record = order_record_from_intent_execution(intent, execution)
     session.add(order_record)
+    # Ensure the parent order_record row is visible before inserting fill_record.
+    session.flush()
 
     fill_event = replace(
         execution.fill_event,
