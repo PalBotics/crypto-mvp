@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 
+from dotenv import load_dotenv
+
 from apps.collector.kraken_auth import KrakenAuthAdapter
 from apps.paper_trader.signal_logger import SignalLogger
 from core.app import bootstrap_app
@@ -18,6 +20,8 @@ def _required_env(name: str) -> str:
 
 
 def main() -> None:
+    load_dotenv()
+
     bootstrap_app(service_name="paper_signal_logger", check_db=True)
 
     api_key = _required_env("KRAKEN_API_KEY")
