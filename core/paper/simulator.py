@@ -34,8 +34,11 @@ class PaperOrderSimulator:
         market: MarketEvent,
     ) -> PaperExecutionResult:
         mode = intent.mode.strip().lower()
-        if mode != "paper":
-            raise ValueError(f"Unsupported mode for paper simulator: {intent.mode}")
+        if mode not in {"paper", "replay"}:
+            raise ValueError(
+                f"Unsupported mode for paper simulator: {intent.mode}. "
+                "Allowed modes: paper, replay"
+            )
 
         order_type = intent.order_type.strip().lower()
         if order_type != "market":

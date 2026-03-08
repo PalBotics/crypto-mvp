@@ -71,6 +71,22 @@ def test_fill_notional_and_fee_are_correct() -> None:
     assert result.fill_event.fee_paid == expected_fee
 
 
+def test_replay_mode_is_accepted() -> None:
+    simulator = PaperOrderSimulator(fee_model=FixedBpsFeeModel(bps=Decimal("10")))
+
+    result = simulator.simulate(_order_intent(side="buy", mode="replay"), _market_event())
+
+    assert result.order_status == "filled"
+
+
+def test_paper_mode_is_accepted() -> None:
+    simulator = PaperOrderSimulator(fee_model=FixedBpsFeeModel(bps=Decimal("10")))
+
+    result = simulator.simulate(_order_intent(side="buy", mode="paper"), _market_event())
+
+    assert result.order_status == "filled"
+
+
 def test_unsupported_order_type_raises_clear_error() -> None:
     simulator = PaperOrderSimulator(fee_model=FixedBpsFeeModel(bps=Decimal("10")))
 
