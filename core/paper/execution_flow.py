@@ -39,7 +39,6 @@ def execute_one_paper_market_intent(
         session.execute(
             select(OrderIntent)
             .where(OrderIntent.mode == mode)
-            .where(OrderIntent.order_type == "market")
             .where(OrderIntent.status == "pending")
             .order_by(OrderIntent.created_ts.asc())
         )
@@ -85,6 +84,9 @@ def execute_one_paper_market_intent(
     if intent_contract.mode.strip().lower() != "paper":
         # Replay runs use mode as a run identifier; simulator still expects paper mode.
         intent_contract = replace(intent_contract, mode="paper")
+    if intent_contract.order_type.strip().lower() != "market":
+        # Reuse existing paper execution path for quote intents.
+        intent_contract = replace(intent_contract, order_type="market")
 
     execution = simulator.simulate(
         intent_contract,

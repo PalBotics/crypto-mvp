@@ -3,15 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import os
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.alerting.evaluator import AlertEvaluator
+from core.models.order_book_snapshot import OrderBookSnapshot
+from core.models.position_snapshot import PositionSnapshot
+from core.models.order_intent import OrderIntent
 from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
 from core.risk.engine import RiskEngine
 from core.strategy.funding_capture import FundingCaptureStrategy
+from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
 from core.utils.logging import get_logger
 
 _log = get_logger(__name__)
@@ -27,6 +33,9 @@ class IterationSummary:
     signal_result: str
     intents_executed: int
     funding_payment_amount: Decimal | None
+
+
+StrategyType = FundingCaptureStrategy | MarketMakingStrategy
 
 
 class PaperTradingLoop:
@@ -49,12 +58,14 @@ class PaperTradingLoop:
     def __init__(
         self,
         session: Session,
-        strategy: FundingCaptureStrategy,
+        strategy: StrategyType,
         risk_engine: RiskEngine,
         fee_model: FeeModel,
         iterations: int,
         market_data: list[tuple[Decimal, Decimal]] | None = None,
         alert_evaluator: AlertEvaluator | None = None,
+        strategy_mode: str = "funding_capture",
+        market_making_config: MarketMakingConfig | None = None,
     ) -> None:
         self._session = session
         self._strategy = strategy
@@ -63,6 +74,8 @@ class PaperTradingLoop:
         self._iterations = iterations
         self._market_data: list[tuple[Decimal, Decimal]] = market_data or []
         self._alert_evaluator = alert_evaluator
+        self._strategy_mode = strategy_mode
+        self._market_making_config = market_making_config
 
     def run(self) -> list[IterationSummary]:
         """Run all iterations and return one IterationSummary per iteration."""
@@ -94,50 +107,18 @@ class PaperTradingLoop:
             mark_price=str(mark_price),
         )
         try:
-            # 1. Evaluate strategy.
-            signal_result = self._strategy.evaluate(
-                self._session, funding_rate, mark_price
-            )
-            _log.info("signal_evaluated", iteration=n, signal=signal_result)
-
-            # 2. Flush so any new pending intents are visible to queries.
-            self._session.flush()
-
-            # 3. Drain all pending intents created this cycle.
-            intents_executed = 0
-            if signal_result in ("entered", "exited"):
-                now = datetime.now(timezone.utc)
-                while execute_one_paper_market_intent(
-                    session=self._session,
-                    fee_model=self._fee_model,
-                    risk_engine=self._risk_engine,
+            if self._strategy_mode == "market_making":
+                signal_result, intents_executed, payment = self._run_iteration_market_making(
+                    n=n,
                     funding_rate=funding_rate,
-                    latest_funding_ts=now,
-                    mode=self._strategy.config.mode,
-                ):
-                    intents_executed += 1
-                    _log.info("intent_executed", iteration=n, count=intents_executed)
-
-                if intents_executed == 0:
-                    _log.info("all_intents_skipped", iteration=n, signal=signal_result)
-
-            # 4. Accrue funding for the open perp position (if any).
-            payment = accrue_funding_payment(
-                session=self._session,
-                symbol=self._strategy.config.perp_symbol,
-                exchange=self._strategy.config.exchange,
-                account_name=self._strategy.config.mode,
-                mark_price=mark_price,
-                funding_rate=funding_rate,
-            )
-            if payment is not None:
-                _log.info(
-                    "funding_accrued",
-                    iteration=n,
-                    payment_amount=str(payment.payment_amount),
+                    mark_price=mark_price,
                 )
             else:
-                _log.info("funding_skipped", iteration=n, reason="no_open_position")
+                signal_result, intents_executed, payment = self._run_iteration_funding_capture(
+                    n=n,
+                    funding_rate=funding_rate,
+                    mark_price=mark_price,
+                )
 
             # 5. Evaluate alerts (if configured) before committing.
             if self._alert_evaluator is not None:
@@ -185,6 +166,141 @@ class PaperTradingLoop:
                 funding_payment_amount=None,
             )
 
+    def _run_iteration_funding_capture(
+        self,
+        n: int,
+        funding_rate: Decimal,
+        mark_price: Decimal,
+    ) -> tuple[str, int, object | None]:
+        strategy = self._strategy
+        if not isinstance(strategy, FundingCaptureStrategy):
+            raise TypeError("Funding capture mode requires FundingCaptureStrategy")
+
+        signal_result = strategy.evaluate(self._session, funding_rate, mark_price)
+        _log.info("signal_evaluated", iteration=n, signal=signal_result)
+
+        self._session.flush()
+
+        intents_executed = 0
+        if signal_result in ("entered", "exited"):
+            now = datetime.now(timezone.utc)
+            while execute_one_paper_market_intent(
+                session=self._session,
+                fee_model=self._fee_model,
+                risk_engine=self._risk_engine,
+                funding_rate=funding_rate,
+                latest_funding_ts=now,
+                mode=strategy.config.mode,
+            ):
+                intents_executed += 1
+                _log.info("intent_executed", iteration=n, count=intents_executed)
+
+            if intents_executed == 0:
+                _log.info("all_intents_skipped", iteration=n, signal=signal_result)
+
+        payment = accrue_funding_payment(
+            session=self._session,
+            symbol=strategy.config.perp_symbol,
+            exchange=strategy.config.exchange,
+            account_name=strategy.config.mode,
+            mark_price=mark_price,
+            funding_rate=funding_rate,
+        )
+        if payment is not None:
+            _log.info(
+                "funding_accrued",
+                iteration=n,
+                payment_amount=str(payment.payment_amount),
+            )
+        else:
+            _log.info("funding_skipped", iteration=n, reason="no_open_position")
+
+        return signal_result, intents_executed, payment
+
+    def _run_iteration_market_making(
+        self,
+        n: int,
+        funding_rate: Decimal,
+        mark_price: Decimal,
+    ) -> tuple[str, int, None]:
+        strategy = self._strategy
+        if not isinstance(strategy, MarketMakingStrategy):
+            raise TypeError("Market making mode requires MarketMakingStrategy")
+        if self._market_making_config is None:
+            raise ValueError("market_making_config is required for market_making mode")
+
+        snapshot = (
+            self._session.execute(
+                select(OrderBookSnapshot)
+                .where(OrderBookSnapshot.exchange == strategy.config.exchange)
+                .where(OrderBookSnapshot.symbol == strategy.config.symbol)
+                .order_by(OrderBookSnapshot.event_ts.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if snapshot is None:
+            _log.info("market_making_no_order_book", iteration=n)
+            return "no_action", 0, None
+
+        current_position = self._current_position(
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+            account_name=self._market_making_config.account_name,
+        )
+        now = datetime.now(timezone.utc)
+        intents = strategy.evaluate(
+            self._session,
+            snapshot,
+            current_position,
+            now,
+        )
+
+        for intent in intents:
+            intent.mode = self._market_making_config.account_name
+            self._session.add(intent)
+
+        self._session.flush()
+
+        intents_executed = 0
+        while execute_one_paper_market_intent(
+            session=self._session,
+            fee_model=self._fee_model,
+            risk_engine=None,
+            funding_rate=funding_rate,
+            latest_funding_ts=now,
+            mode=self._market_making_config.account_name,
+        ):
+            intents_executed += 1
+
+        signal_result = "quoted" if intents else "no_action"
+        _log.info(
+            "signal_evaluated",
+            iteration=n,
+            signal=signal_result,
+            intents_generated=len(intents),
+            intents_executed=intents_executed,
+        )
+        return signal_result, intents_executed, None
+
+    def _current_position(self, exchange: str, symbol: str, account_name: str) -> Decimal:
+        latest = (
+            self._session.execute(
+                select(PositionSnapshot)
+                .where(PositionSnapshot.exchange == exchange)
+                .where(PositionSnapshot.symbol == symbol)
+                .where(PositionSnapshot.account_name == account_name)
+                .order_by(PositionSnapshot.snapshot_ts.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if latest is None:
+            return Decimal("0")
+        qty = Decimal(str(latest.quantity))
+        side = (latest.side or "").strip().lower()
+        return qty if side == "buy" else -qty
+
 
 def main() -> None:
     """CLI entry point for the paper trading loop."""
@@ -193,29 +309,48 @@ def main() -> None:
     from core.paper.fees import FixedBpsFeeModel
     from core.risk.engine import RiskConfig
     from core.strategy.funding_capture import FundingCaptureConfig
+    from core.strategy.market_making import MarketMakingConfig
 
     ctx = bootstrap_app(service_name="paper_trader", check_db=True)
     session = get_db_session()
+    paper_strategy = os.environ.get("PAPER_STRATEGY", "funding_capture").strip().lower()
 
-    strategy_config = FundingCaptureConfig(
-        spot_symbol="BTC-USD",
-        perp_symbol="BTC-PERP",
-        exchange="binance",
-        entry_funding_rate_threshold=Decimal("0.0001"),
-        exit_funding_rate_threshold=Decimal("0.00005"),
-        position_size=Decimal("1"),
-    )
     risk_config = RiskConfig(
         max_data_age_seconds=3600,
         min_entry_funding_rate=Decimal("0.0001"),
         max_notional_per_symbol=Decimal("1000000"),
     )
+
+    mm_config = MarketMakingConfig(
+        spread_bps=Decimal(os.environ.get("MM_SPREAD_BPS", "20")),
+        quote_size=Decimal(os.environ.get("MM_QUOTE_SIZE", "0.001")),
+        max_inventory=Decimal(os.environ.get("MM_MAX_INVENTORY", "0.01")),
+        min_spread_bps=Decimal(os.environ.get("MM_MIN_SPREAD_BPS", "5")),
+        stale_book_seconds=int(os.environ.get("MM_STALE_BOOK_SECONDS", "10")),
+        account_name=os.environ.get("MM_ACCOUNT_NAME", "paper_mm"),
+    )
+
+    if paper_strategy == "market_making":
+        strategy: StrategyType = MarketMakingStrategy(mm_config)
+    else:
+        strategy_config = FundingCaptureConfig(
+            spot_symbol="BTC-USD",
+            perp_symbol="BTC-PERP",
+            exchange="binance",
+            entry_funding_rate_threshold=Decimal("0.0001"),
+            exit_funding_rate_threshold=Decimal("0.00005"),
+            position_size=Decimal("1"),
+        )
+        strategy = FundingCaptureStrategy(strategy_config)
+
     loop = PaperTradingLoop(
         session=session,
-        strategy=FundingCaptureStrategy(strategy_config),
+        strategy=strategy,
         risk_engine=RiskEngine(risk_config),
         fee_model=FixedBpsFeeModel(bps=Decimal("10")),
         iterations=1,
+        strategy_mode=paper_strategy,
+        market_making_config=mm_config,
     )
 
     try:
