@@ -273,6 +273,7 @@ class PaperTradingLoop:
             funding_rate=funding_rate,
             latest_funding_ts=now,
             mode=self._market_making_config.account_name,
+            order_book_snapshot=snapshot,
         ):
             intents_executed += 1
 

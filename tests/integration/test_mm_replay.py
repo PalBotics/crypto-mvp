@@ -21,7 +21,7 @@ def _seed_replay_data(session: Session) -> list[OrderBookSnapshot]:
 
     for i in range(5):
         ts = base_ts + timedelta(seconds=60 * i)
-        mid = Decimal("60000") + Decimal(i)
+        mid = Decimal("60000") - (Decimal("100") * Decimal(i))
         spread = mid * Decimal("8") / Decimal("10000")
         snapshot = OrderBookSnapshot(
             exchange="kraken",
@@ -98,6 +98,7 @@ def _run_market_making_replay(session: Session) -> dict[str, int]:
             fee_model=fee_model,
             risk_engine=None,
             mode=strategy.config.account_name,
+            order_book_snapshot=snapshot,
         ):
             latest = (
                 session.execute(
