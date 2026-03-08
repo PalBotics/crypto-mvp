@@ -21,8 +21,8 @@ class MarketMakingConfig:
     spread_bps: Decimal = Decimal("20")
     quote_size: Decimal = Decimal("0.001")
     max_inventory: Decimal = Decimal("0.01")
-    min_spread_bps: Decimal = Decimal("5")
-    stale_book_seconds: int = 10
+    min_spread_bps: Decimal = Decimal("0.01")
+    stale_book_seconds: int = 120
 
 
 class MarketMakingStrategy:

@@ -17,7 +17,7 @@ def _config() -> MarketMakingConfig:
         quote_size=Decimal("0.001"),
         max_inventory=Decimal("0.01"),
         min_spread_bps=Decimal("5"),
-        stale_book_seconds=10,
+        stale_book_seconds=120,
     )
 
 
@@ -100,7 +100,7 @@ def test_suppresses_ask_at_max_short_inventory() -> None:
 
 def test_returns_empty_on_stale_book() -> None:
     strategy = MarketMakingStrategy(_config())
-    stale_ts = datetime.now(timezone.utc) - timedelta(seconds=60)
+    stale_ts = datetime.now(timezone.utc) - timedelta(seconds=180)
 
     intents = strategy.evaluate(
         session=Mock(),

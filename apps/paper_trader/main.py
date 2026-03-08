@@ -321,14 +321,20 @@ def main() -> None:
         max_notional_per_symbol=Decimal("1000000"),
     )
 
-    mm_config = MarketMakingConfig(
-        spread_bps=Decimal(os.environ.get("MM_SPREAD_BPS", "20")),
-        quote_size=Decimal(os.environ.get("MM_QUOTE_SIZE", "0.001")),
-        max_inventory=Decimal(os.environ.get("MM_MAX_INVENTORY", "0.01")),
-        min_spread_bps=Decimal(os.environ.get("MM_MIN_SPREAD_BPS", "5")),
-        stale_book_seconds=int(os.environ.get("MM_STALE_BOOK_SECONDS", "10")),
-        account_name=os.environ.get("MM_ACCOUNT_NAME", "paper_mm"),
-    )
+    _stale = os.environ.get("MM_STALE_BOOK_SECONDS")
+    stale_book_seconds = int(_stale) if _stale is not None else None
+
+    mm_kwargs = {
+        "spread_bps": Decimal(os.environ.get("MM_SPREAD_BPS", "20")),
+        "quote_size": Decimal(os.environ.get("MM_QUOTE_SIZE", "0.001")),
+        "max_inventory": Decimal(os.environ.get("MM_MAX_INVENTORY", "0.01")),
+        "min_spread_bps": Decimal(os.environ.get("MM_MIN_SPREAD_BPS", "5")),
+        "account_name": os.environ.get("MM_ACCOUNT_NAME", "paper_mm"),
+    }
+    if stale_book_seconds is not None:
+        mm_kwargs["stale_book_seconds"] = stale_book_seconds
+
+    mm_config = MarketMakingConfig(**mm_kwargs)
 
     if paper_strategy == "market_making":
         strategy: StrategyType = MarketMakingStrategy(mm_config)
