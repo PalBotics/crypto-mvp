@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from core.models.fill_record import FillRecord
 from core.models.funding_payment import FundingPayment
 from core.models.funding_rate_snapshot import FundingRateSnapshot
+from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
 from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
@@ -29,6 +30,22 @@ class KPIResult:
     fee_drag: Decimal
     funding_income_captured: Decimal
     missed_opportunity_count: int
+
+
+@dataclass(frozen=True)
+class MMKPIResult:
+    account_name: str
+    start_ts: datetime
+    end_ts: datetime
+    total_fills: int
+    total_volume: Decimal
+    total_fees: Decimal
+    realized_pnl: Decimal
+    gross_spread_capture: Decimal
+    net_spread_capture: Decimal
+    fill_rate: Decimal
+    avg_spread_captured_bps: Decimal
+    inventory_turnover: Decimal
 
 
 def calculate_kpis(
@@ -165,4 +182,116 @@ def calculate_kpis(
         fee_drag=fee_drag,
         funding_income_captured=funding_total,
         missed_opportunity_count=missed_opportunity_count,
+    )
+
+
+def calculate_mm_kpis(
+    session: Session,
+    account_name: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    initial_capital: Decimal,
+) -> MMKPIResult:
+    fills = session.execute(
+        select(
+            FillRecord.exchange,
+            FillRecord.symbol,
+            FillRecord.fill_price,
+            FillRecord.fill_qty,
+            FillRecord.fee_paid,
+            FillRecord.fill_ts,
+        )
+        .select_from(FillRecord)
+        .join(OrderRecord, OrderRecord.id == FillRecord.order_record_id)
+        .join(OrderIntent, OrderIntent.id == OrderRecord.order_intent_id)
+        .where(OrderIntent.mode == account_name)
+        .where(FillRecord.fill_ts >= start_ts)
+        .where(FillRecord.fill_ts <= end_ts)
+        .order_by(FillRecord.fill_ts.asc())
+    ).all()
+
+    total_fills = len(fills)
+    total_volume = Decimal("0")
+    total_fees = Decimal("0")
+
+    for exchange, symbol, fill_price, fill_qty, fee_paid, _fill_ts in fills:
+        del exchange, symbol
+        price = _to_decimal(fill_price)
+        qty = _to_decimal(fill_qty)
+        total_volume += price * qty
+        total_fees += _to_decimal(fee_paid)
+
+    realized_pnl = _to_decimal(
+        session.execute(
+            select(func.sum(PnLSnapshot.realized_pnl))
+            .where(PnLSnapshot.strategy_name == account_name)
+            .where(PnLSnapshot.snapshot_ts >= start_ts)
+            .where(PnLSnapshot.snapshot_ts <= end_ts)
+        ).scalar_one()
+    )
+
+    total_intents_generated = int(
+        session.execute(
+            select(func.count(OrderIntent.id))
+            .where(OrderIntent.mode == account_name)
+            .where(OrderIntent.created_ts >= start_ts)
+            .where(OrderIntent.created_ts <= end_ts)
+        ).scalar_one()
+    )
+
+    gross_spread_capture = Decimal("0")
+    for exchange, symbol, fill_price, fill_qty, _fee_paid, fill_ts in fills:
+        window_start = fill_ts - timedelta(seconds=5)
+        window_end = fill_ts + timedelta(seconds=5)
+
+        nearby_snapshots = session.execute(
+            select(OrderBookSnapshot.event_ts, OrderBookSnapshot.mid_price)
+            .where(OrderBookSnapshot.exchange == exchange)
+            .where(OrderBookSnapshot.symbol == symbol)
+            .where(OrderBookSnapshot.event_ts >= window_start)
+            .where(OrderBookSnapshot.event_ts <= window_end)
+            .where(OrderBookSnapshot.mid_price.is_not(None))
+        ).all()
+
+        if not nearby_snapshots:
+            continue
+
+        nearest_mid = min(
+            nearby_snapshots,
+            key=lambda row: abs((row[0] - fill_ts).total_seconds()),
+        )[1]
+        if nearest_mid is None:
+            continue
+
+        price = _to_decimal(fill_price)
+        qty = _to_decimal(fill_qty)
+        gross_spread_capture += abs(price - _to_decimal(nearest_mid)) * qty
+
+    net_spread_capture = gross_spread_capture - total_fees
+
+    fill_rate = Decimal("0")
+    if total_intents_generated > 0:
+        fill_rate = Decimal(total_fills) / Decimal(total_intents_generated)
+
+    avg_spread_captured_bps = Decimal("0")
+    if total_volume != Decimal("0"):
+        avg_spread_captured_bps = (gross_spread_capture / total_volume) * Decimal("10000")
+
+    inventory_turnover = Decimal("0")
+    if initial_capital != Decimal("0"):
+        inventory_turnover = total_volume / initial_capital
+
+    return MMKPIResult(
+        account_name=account_name,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        total_fills=total_fills,
+        total_volume=total_volume,
+        total_fees=total_fees,
+        realized_pnl=realized_pnl,
+        gross_spread_capture=gross_spread_capture,
+        net_spread_capture=net_spread_capture,
+        fill_rate=fill_rate,
+        avg_spread_captured_bps=avg_spread_captured_bps,
+        inventory_turnover=inventory_turnover,
     )

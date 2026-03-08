@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from core.models.fill_record import FillRecord
 from core.models.funding_payment import FundingPayment
 from core.models.funding_rate_snapshot import FundingRateSnapshot
+from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
 from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
@@ -46,6 +47,9 @@ class AlertConfig:
     spot_symbol: str = ""
     perp_symbol: str = ""
     mismatch_tolerance: Decimal = Decimal("0.01")
+    ob_exchange: str = ""
+    ob_symbol: str = ""
+    mm_min_spread_bps: Decimal = Decimal("5")
 
 
 @dataclass
@@ -73,6 +77,14 @@ class AlertEvaluator:
         results: list[AlertResult] = []
 
         alert = self._check_stale_funding_data(session, now)
+        if alert:
+            results.append(alert)
+
+        alert = self._check_stale_order_book(session, now)
+        if alert:
+            results.append(alert)
+
+        alert = self._check_spread_too_tight(session)
         if alert:
             results.append(alert)
 
@@ -159,6 +171,61 @@ class AlertEvaluator:
                 alert_type="stale_funding_data",
                 severity="warning",
                 message=message,
+            )
+        return None
+
+    def _check_stale_order_book(self, session: Session, now: datetime) -> AlertResult | None:
+        """Trigger warning when latest order-book snapshot is stale."""
+        if not self._config.ob_exchange or not self._config.ob_symbol:
+            return None
+
+        latest_ts = session.execute(
+            select(func.max(OrderBookSnapshot.event_ts))
+            .where(OrderBookSnapshot.exchange == self._config.ob_exchange)
+            .where(OrderBookSnapshot.symbol == self._config.ob_symbol)
+        ).scalar_one()
+
+        if latest_ts is None:
+            return AlertResult(
+                alert_type="stale_order_book",
+                severity="warning",
+                message="order_book_stale",
+            )
+
+        if latest_ts.tzinfo is None:
+            latest_ts = latest_ts.replace(tzinfo=timezone.utc)
+
+        age_seconds = (now - latest_ts).total_seconds()
+        if age_seconds > self._config.stale_data_threshold_seconds:
+            return AlertResult(
+                alert_type="stale_order_book",
+                severity="warning",
+                message="order_book_stale",
+            )
+        return None
+
+    def _check_spread_too_tight(self, session: Session) -> AlertResult | None:
+        """Trigger warning when latest order-book spread_bps is below MM threshold."""
+        if not self._config.ob_exchange or not self._config.ob_symbol:
+            return None
+
+        latest_snapshot = session.execute(
+            select(OrderBookSnapshot)
+            .where(OrderBookSnapshot.exchange == self._config.ob_exchange)
+            .where(OrderBookSnapshot.symbol == self._config.ob_symbol)
+            .order_by(OrderBookSnapshot.event_ts.desc())
+            .limit(1)
+        ).scalars().first()
+
+        if latest_snapshot is None or latest_snapshot.spread_bps is None:
+            return None
+
+        spread_bps = _to_decimal(latest_snapshot.spread_bps)
+        if spread_bps < self._config.mm_min_spread_bps:
+            return AlertResult(
+                alert_type="spread_too_tight",
+                severity="warning",
+                message="spread_too_tight",
             )
         return None
 
