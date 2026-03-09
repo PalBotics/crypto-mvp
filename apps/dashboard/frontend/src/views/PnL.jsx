@@ -1,3 +1,11 @@
+import PnLChart from '../components/charts/PnLChart'
+import PnLBreakdown from '../components/panels/PnLBreakdown'
+
 export default function PnL() {
-  return <div className="text-text-secondary font-mono text-xs">PnL — coming Sprint 4</div>
+  return (
+    <div className="flex flex-col gap-4">
+      <PnLChart />
+      <PnLBreakdown />
+    </div>
+  )
 }

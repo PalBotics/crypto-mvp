@@ -8,8 +8,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.models.fill_record import FillRecord
+from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.funding_payment import FundingPayment
+from core.models.market_tick import MarketTick
 from core.models.order_intent import OrderIntent
+from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
@@ -75,6 +78,42 @@ class RunSummaryRow:
     unrealized_pnl: Decimal
     funding_paid: Decimal
     net_pnl: Decimal
+
+
+@dataclass(frozen=True)
+class MarketTickRow:
+    exchange: str
+    symbol: str
+    bid_price: Decimal
+    ask_price: Decimal
+    mid_price: Decimal
+    last_price: Decimal | None
+    event_ts: datetime
+
+
+@dataclass(frozen=True)
+class OrderBookRow:
+    exchange: str
+    symbol: str
+    bid_price_1: Decimal
+    bid_size_1: Decimal
+    ask_price_1: Decimal
+    ask_size_1: Decimal
+    spread: Decimal | None
+    spread_bps: Decimal | None
+    mid_price: Decimal | None
+    event_ts: datetime
+
+
+@dataclass(frozen=True)
+class FundingRateRow:
+    exchange: str
+    symbol: str
+    funding_rate: Decimal
+    predicted_funding_rate: Decimal | None
+    mark_price: Decimal | None
+    next_funding_ts: datetime | None
+    event_ts: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +267,80 @@ def get_run_summary(session: Session, account_name: str) -> RunSummaryRow:
         funding_paid=pnl.total_funding_paid,
         net_pnl=pnl.net_pnl,
     )
+
+
+def get_recent_ticks(
+    session: Session, symbol: str, limit: int = 120
+) -> list[MarketTickRow]:
+    stmt = (
+        select(MarketTick)
+        .where(MarketTick.symbol == symbol)
+        .order_by(MarketTick.event_ts.desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).scalars().all()
+    return [
+        MarketTickRow(
+            exchange=row.exchange,
+            symbol=row.symbol,
+            bid_price=_to_decimal(row.bid_price),
+            ask_price=_to_decimal(row.ask_price),
+            mid_price=_to_decimal(row.mid_price),
+            last_price=None if row.last_price is None else _to_decimal(row.last_price),
+            event_ts=row.event_ts,
+        )
+        for row in rows
+    ]
+
+
+def get_recent_order_books(
+    session: Session, symbol: str, limit: int = 20
+) -> list[OrderBookRow]:
+    stmt = (
+        select(OrderBookSnapshot)
+        .where(OrderBookSnapshot.symbol == symbol)
+        .order_by(OrderBookSnapshot.event_ts.desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).scalars().all()
+    return [
+        OrderBookRow(
+            exchange=row.exchange,
+            symbol=row.symbol,
+            bid_price_1=_to_decimal(row.bid_price_1),
+            bid_size_1=_to_decimal(row.bid_size_1),
+            ask_price_1=_to_decimal(row.ask_price_1),
+            ask_size_1=_to_decimal(row.ask_size_1),
+            spread=None if row.spread is None else _to_decimal(row.spread),
+            spread_bps=None if row.spread_bps is None else _to_decimal(row.spread_bps),
+            mid_price=None if row.mid_price is None else _to_decimal(row.mid_price),
+            event_ts=row.event_ts,
+        )
+        for row in rows
+    ]
+
+
+def get_recent_funding_rates(
+    session: Session, symbol: str, limit: int = 48
+) -> list[FundingRateRow]:
+    stmt = (
+        select(FundingRateSnapshot)
+        .where(FundingRateSnapshot.symbol == symbol)
+        .order_by(FundingRateSnapshot.event_ts.desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).scalars().all()
+    return [
+        FundingRateRow(
+            exchange=row.exchange,
+            symbol=row.symbol,
+            funding_rate=_to_decimal(row.funding_rate),
+            predicted_funding_rate=None
+            if row.predicted_funding_rate is None
+            else _to_decimal(row.predicted_funding_rate),
+            mark_price=None if row.mark_price is None else _to_decimal(row.mark_price),
+            next_funding_ts=row.next_funding_ts,
+            event_ts=row.event_ts,
+        )
+        for row in rows
+    ]

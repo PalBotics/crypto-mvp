@@ -1,3 +1,11 @@
+import FillRateChart from '../components/charts/FillRateChart'
+import FillHistory from '../components/panels/FillHistory'
+
 export default function Fills() {
-  return <div className="text-text-secondary font-mono text-xs">Fills — coming Sprint 4</div>
+  return (
+    <div className="flex flex-col gap-4">
+      <FillRateChart />
+      <FillHistory />
+    </div>
+  )
 }

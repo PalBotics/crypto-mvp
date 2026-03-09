@@ -120,3 +120,83 @@ class RunSummarySchema(BaseModel):
             funding_paid=str(row.funding_paid),  # type: ignore[attr-defined]
             net_pnl=str(row.net_pnl),  # type: ignore[attr-defined]
         )
+
+
+class MarketTickSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    exchange: str
+    symbol: str
+    bid_price: str
+    ask_price: str
+    mid_price: str
+    last_price: str | None
+    event_ts: datetime
+
+    @classmethod
+    def from_row(cls, row: object) -> "MarketTickSchema":
+        return cls(
+            exchange=row.exchange,  # type: ignore[attr-defined]
+            symbol=row.symbol,  # type: ignore[attr-defined]
+            bid_price=str(row.bid_price),  # type: ignore[attr-defined]
+            ask_price=str(row.ask_price),  # type: ignore[attr-defined]
+            mid_price=str(row.mid_price),  # type: ignore[attr-defined]
+            last_price=None if row.last_price is None else str(row.last_price),  # type: ignore[attr-defined]
+            event_ts=row.event_ts,  # type: ignore[attr-defined]
+        )
+
+
+class OrderBookSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    exchange: str
+    symbol: str
+    bid_price_1: str
+    bid_size_1: str
+    ask_price_1: str
+    ask_size_1: str
+    spread: str | None
+    spread_bps: str | None
+    mid_price: str | None
+    event_ts: datetime
+
+    @classmethod
+    def from_row(cls, row: object) -> "OrderBookSchema":
+        return cls(
+            exchange=row.exchange,  # type: ignore[attr-defined]
+            symbol=row.symbol,  # type: ignore[attr-defined]
+            bid_price_1=str(row.bid_price_1),  # type: ignore[attr-defined]
+            bid_size_1=str(row.bid_size_1),  # type: ignore[attr-defined]
+            ask_price_1=str(row.ask_price_1),  # type: ignore[attr-defined]
+            ask_size_1=str(row.ask_size_1),  # type: ignore[attr-defined]
+            spread=None if row.spread is None else str(row.spread),  # type: ignore[attr-defined]
+            spread_bps=None if row.spread_bps is None else str(row.spread_bps),  # type: ignore[attr-defined]
+            mid_price=None if row.mid_price is None else str(row.mid_price),  # type: ignore[attr-defined]
+            event_ts=row.event_ts,  # type: ignore[attr-defined]
+        )
+
+
+class FundingRateSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    exchange: str
+    symbol: str
+    funding_rate: str
+    predicted_funding_rate: str | None
+    mark_price: str | None
+    next_funding_ts: datetime | None
+    event_ts: datetime
+
+    @classmethod
+    def from_row(cls, row: object) -> "FundingRateSchema":
+        return cls(
+            exchange=row.exchange,  # type: ignore[attr-defined]
+            symbol=row.symbol,  # type: ignore[attr-defined]
+            funding_rate=str(row.funding_rate),  # type: ignore[attr-defined]
+            predicted_funding_rate=None
+            if row.predicted_funding_rate is None
+            else str(row.predicted_funding_rate),  # type: ignore[attr-defined]
+            mark_price=None if row.mark_price is None else str(row.mark_price),  # type: ignore[attr-defined]
+            next_funding_ts=row.next_funding_ts,  # type: ignore[attr-defined]
+            event_ts=row.event_ts,  # type: ignore[attr-defined]
+        )

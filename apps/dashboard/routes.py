@@ -13,15 +13,21 @@ from sqlalchemy.orm import Session
 
 from core.db.session import SessionLocal
 from core.reporting.queries import (
+    get_recent_funding_rates,
     get_open_positions,
+    get_recent_order_books,
     get_pnl_summary,
     get_recent_fills,
+    get_recent_ticks,
     get_risk_events,
     get_run_summary,
 )
 
 from apps.dashboard.schemas import (
     FillSchema,
+    FundingRateSchema,
+    MarketTickSchema,
+    OrderBookSchema,
     PnLSummarySchema,
     PositionSchema,
     RiskEventSchema,
@@ -66,7 +72,7 @@ def pnl_summary(account_name: str, session: SessionDep) -> PnLSummarySchema:
 def recent_fills(
     account_name: str,
     session: SessionDep,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    limit: Annotated[int, Query(ge=1, le=500)] = 20,
 ) -> list[FillSchema]:
     rows = get_recent_fills(session, account_name, limit=limit)
     return [FillSchema.from_row(r) for r in rows]
@@ -80,3 +86,33 @@ def risk_events(
 ) -> list[RiskEventSchema]:
     rows = get_risk_events(session, account_name, limit=limit)
     return [RiskEventSchema.from_row(r) for r in rows]
+
+
+@router.get("/market/ticks", response_model=list[MarketTickSchema])
+def recent_ticks(
+    session: SessionDep,
+    symbol: Annotated[str, Query()] = "XBTUSD",
+    limit: Annotated[int, Query(ge=1, le=500)] = 120,
+) -> list[MarketTickSchema]:
+    rows = get_recent_ticks(session, symbol, limit=limit)
+    return [MarketTickSchema.from_row(r) for r in rows]
+
+
+@router.get("/market/order-books", response_model=list[OrderBookSchema])
+def recent_order_books(
+    session: SessionDep,
+    symbol: Annotated[str, Query()] = "XBTUSD",
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[OrderBookSchema]:
+    rows = get_recent_order_books(session, symbol, limit=limit)
+    return [OrderBookSchema.from_row(r) for r in rows]
+
+
+@router.get("/market/funding", response_model=list[FundingRateSchema])
+def recent_funding_rates(
+    session: SessionDep,
+    symbol: Annotated[str, Query()] = "XBTUSD",
+    limit: Annotated[int, Query(ge=1, le=200)] = 48,
+) -> list[FundingRateSchema]:
+    rows = get_recent_funding_rates(session, symbol, limit=limit)
+    return [FundingRateSchema.from_row(r) for r in rows]
