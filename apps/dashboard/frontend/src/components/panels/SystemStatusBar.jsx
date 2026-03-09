@@ -16,7 +16,7 @@ export default function SystemStatusBar() {
   const paperTraderStatus = summary.data && !summary.error ? 'ok' : summary.error ? 'error' : summary.loading ? 'stale' : 'stale'
 
   return (
-    <div className="bg-surface border border-border rounded-sm px-4 py-2 flex items-center gap-6">
+    <div className="bg-surface border border-border border-b border-border rounded-sm px-4 py-2 flex items-center gap-6">
       <div className="flex items-center gap-2">
         <StatusDot status={apiStatus} label="API" />
       </div>
@@ -37,7 +37,7 @@ export default function SystemStatusBar() {
 
       <div className="flex items-center gap-2">
         <span className="text-text-secondary text-xs font-medium">last update</span>
-        <TimeAgo timestamp={health.lastUpdated} />
+        <TimeAgo timestamp={health.lastUpdated} staleAfter={120} />
       </div>
     </div>
   )

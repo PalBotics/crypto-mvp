@@ -42,8 +42,8 @@ function Sidebar() {
               `group relative flex items-center justify-center h-9 w-full rounded-sm
                transition-all duration-150 cursor-pointer
                ${isActive
-                 ? 'bg-blue/15 text-blue'
-                 : 'text-text-dim hover:text-text-secondary hover:bg-muted/40'
+                 ? 'border-l-2 border-blue bg-blue/10 text-blue'
+                 : 'border-l-2 border-transparent text-text-dim hover:text-text-secondary hover:bg-muted/40'
                }`
             }
           >
@@ -110,7 +110,7 @@ export default function App() {
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header />
-        <main className="flex-1 overflow-y-auto p-4 animate-fade-in">
+        <main className="flex-1 overflow-y-auto p-4 min-w-0 animate-fade-in">
           <Routes>
             <Route path="/"         element={<Overview />}     />
             <Route path="/market"   element={<MarketData />}   />

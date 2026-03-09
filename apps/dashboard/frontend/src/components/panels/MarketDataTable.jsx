@@ -29,7 +29,15 @@ export default function MarketDataTable() {
       key: 'spread',
       label: 'Spread',
       align: 'right',
-      render: (v) => <span className="font-mono text-xs text-text-secondary">{formatUSD(v)}</span>,
+      render: (v) => {
+        const parsed = parseFloat(v)
+        const isAnomalous = !Number.isNaN(parsed) && parsed > 1.0
+        return (
+          <span className={isAnomalous ? 'text-yellow font-mono text-xs' : 'text-text-secondary font-mono text-xs'}>
+            {formatUSD(v)}
+          </span>
+        )
+      },
     },
     {
       key: 'spread_bps',
@@ -37,8 +45,9 @@ export default function MarketDataTable() {
       align: 'right',
       render: (v) => {
         const parsed = parseFloat(v)
+        const isAnomalous = !Number.isNaN(parsed) && parsed > 1.0
         return (
-          <span className="font-mono text-xs text-text-secondary">
+          <span className={isAnomalous ? 'text-yellow font-mono text-xs font-semibold' : 'text-text-secondary font-mono text-xs'}>
             {Number.isNaN(parsed) ? '—' : parsed.toFixed(2) + ' bps'}
           </span>
         )

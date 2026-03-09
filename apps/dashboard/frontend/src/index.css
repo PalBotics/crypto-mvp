@@ -35,6 +35,7 @@
   .neg   { @apply text-red; }
   .label { @apply text-text-secondary text-xs font-medium tracking-wide uppercase; }
   .sep   { @apply border-t border-border; }
+  .panel-stale { @apply border-yellow/30; }
 
   .tooltip {
     @apply absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50
