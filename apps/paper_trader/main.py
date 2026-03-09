@@ -411,7 +411,7 @@ def main() -> None:
         session=session,
         strategy=strategy,
         risk_engine=RiskEngine(risk_config),
-        fee_model=FixedBpsFeeModel(bps=Decimal("10")),
+        fee_model=FixedBpsFeeModel(bps=Decimal("25")),
         iterations=1,
         strategy_mode=paper_strategy,
         market_making_config=mm_config,
