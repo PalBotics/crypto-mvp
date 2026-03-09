@@ -9,6 +9,8 @@ import Fills        from './views/Fills'
 import PnL          from './views/PnL'
 import Health       from './views/Health'
 import SettingsView from './views/Settings'
+import useHealth from './hooks/useHealth'
+import useRunSummary from './hooks/useRunSummary'
 
 const NAV = [
   { to: '/',         icon: LayoutDashboard, label: 'Overview'    },
@@ -71,6 +73,18 @@ function StatusChip({ label, status = 'ok' }) {
 
 function Header() {
   const location = useLocation()
+  const health = useHealth()
+  const summary = useRunSummary()
+
+  const collectorStatus =
+    health.data?.status === 'ok' ? 'ok' : health.error ? 'error' : health.loading ? 'stale' : 'stale'
+
+  const paperTraderStatus =
+    summary.data && !summary.error ? 'ok' : summary.error ? 'error' : summary.loading ? 'stale' : 'stale'
+
+  const dbStatus =
+    health.data?.status === 'ok' ? 'ok' : health.error ? 'error' : health.loading ? 'stale' : 'stale'
+
   const current = NAV.find(n =>
     n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)
   )
@@ -82,9 +96,9 @@ function Header() {
         <span className="text-text-primary text-xs font-medium">{current?.label ?? 'Dashboard'}</span>
       </div>
       <div className="flex items-center gap-4">
-        <StatusChip label="Collector"    status="ok" />
-        <StatusChip label="Paper Trader" status="ok" />
-        <StatusChip label="DB"           status="ok" />
+        <StatusChip label="Collector"    status={collectorStatus} />
+        <StatusChip label="Paper Trader" status={paperTraderStatus} />
+        <StatusChip label="DB"           status={dbStatus} />
       </div>
     </header>
   )
