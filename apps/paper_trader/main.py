@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import os
 import signal
@@ -246,27 +246,20 @@ class PaperTradingLoop:
             _log.info("market_making_no_order_book", iteration=n)
             return "no_action", 0, None
 
-        current_position = self._current_position(
-            exchange=strategy.config.exchange,
-            symbol=strategy.config.symbol,
-            account_name=self._market_making_config.account_name,
-        )
         now = datetime.now(timezone.utc)
-        intents = strategy.evaluate(
-            self._session,
-            snapshot,
-            current_position,
-            now,
+        pending_stmt = (
+            select(OrderIntent)
+            .where(OrderIntent.mode == self._market_making_config.account_name)
+            .where(OrderIntent.exchange == strategy.config.exchange)
+            .where(OrderIntent.symbol == strategy.config.symbol)
+            .where(OrderIntent.status == "pending")
+            .order_by(OrderIntent.created_ts.asc())
         )
 
-        for intent in intents:
-            intent.mode = self._market_making_config.account_name
-            self._session.add(intent)
-
-        self._session.flush()
-
+        # 1) Re-check all existing pending intents against the current snapshot.
+        pending_intents = self._session.execute(pending_stmt).scalars().all()
         intents_executed = 0
-        for intent in intents:
+        for intent in pending_intents:
             if execute_one_paper_market_intent(
                 session=self._session,
                 fee_model=self._fee_model,
@@ -279,13 +272,58 @@ class PaperTradingLoop:
             ):
                 intents_executed += 1
 
-        signal_result = "quoted" if intents else "no_action"
+        # 2) Cancel stale pending intents that survived this cycle's re-check.
+        stale_cutoff = now - timedelta(seconds=self._market_making_config.stale_book_seconds)
+        pending_after_check = self._session.execute(pending_stmt).scalars().all()
+        for intent in pending_after_check:
+            if intent.created_ts < stale_cutoff:
+                age_seconds = (now - intent.created_ts).total_seconds()
+                intent.status = "cancelled"
+                _log.info(
+                    "intent_cancelled_stale",
+                    intent_id=str(intent.id),
+                    side=intent.side,
+                    limit_price=(
+                        str(intent.limit_price) if intent.limit_price is not None else None
+                    ),
+                    age_seconds=age_seconds,
+                )
+
+        self._session.flush()
+
+        # 3) Only generate fresh quotes if no pending intents remain.
+        remaining_pending = self._session.execute(pending_stmt).scalars().all()
+        intents_generated = 0
+        if not remaining_pending:
+            current_position = self._current_position(
+                exchange=strategy.config.exchange,
+                symbol=strategy.config.symbol,
+                account_name=self._market_making_config.account_name,
+            )
+            intents = strategy.evaluate(
+                self._session,
+                snapshot,
+                current_position,
+                now,
+            )
+
+            for intent in intents:
+                intent.mode = self._market_making_config.account_name
+                self._session.add(intent)
+
+            intents_generated = len(intents)
+            self._session.flush()
+        else:
+            intents = []
+
+        signal_result = "quoted" if intents_generated > 0 else "no_action"
         _log.info(
             "signal_evaluated",
             iteration=n,
             signal=signal_result,
-            intents_generated=len(intents),
+            intents_generated=intents_generated,
             intents_executed=intents_executed,
+            pending_remaining=len(remaining_pending),
         )
         return signal_result, intents_executed, None
 

@@ -359,8 +359,8 @@ class TestFills:
         assert resp.status_code == 200
         assert len(resp.json()) == 3
 
-    def test_limit_max_is_100(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/fills?limit=101")
+    def test_limit_max_is_500(self, client):
+        resp = client.get(f"/runs/{ACCOUNT}/fills?limit=501")
         assert resp.status_code == 422
 
     def test_fill_price_is_string(self, client, db_session):
