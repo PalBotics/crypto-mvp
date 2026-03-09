@@ -34,24 +34,30 @@ def execute_one_paper_market_intent(
     latest_funding_ts: datetime | None = None,
     mode: str = "paper",
     order_book_snapshot: OrderBookSnapshot | None = None,
+    explicit_intent: OrderIntent | None = None,
 ) -> bool:
     """Execute at most one eligible paper market order intent.
 
     Returns:
         True if one intent was executed and persisted, otherwise False.
     """
-    intent = (
-        session.execute(
-            select(OrderIntent)
-            .where(OrderIntent.mode == mode)
-            .where(OrderIntent.status == "pending")
-            .order_by(OrderIntent.created_ts.asc())
+    if explicit_intent is not None:
+        intent = explicit_intent
+    else:
+        intent = (
+            session.execute(
+                select(OrderIntent)
+                .where(OrderIntent.mode == mode)
+                .where(OrderIntent.status == "pending")
+                .order_by(OrderIntent.created_ts.asc())
+            )
+            .scalars()
+            .first()
         )
-        .scalars()
-        .first()
-    )
 
     if intent is None:
+        return False
+    if intent.status != "pending":
         return False
 
     tick = (

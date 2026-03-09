@@ -266,16 +266,18 @@ class PaperTradingLoop:
         self._session.flush()
 
         intents_executed = 0
-        while execute_one_paper_market_intent(
-            session=self._session,
-            fee_model=self._fee_model,
-            risk_engine=None,
-            funding_rate=funding_rate,
-            latest_funding_ts=now,
-            mode=self._market_making_config.account_name,
-            order_book_snapshot=snapshot,
-        ):
-            intents_executed += 1
+        for intent in intents:
+            if execute_one_paper_market_intent(
+                session=self._session,
+                fee_model=self._fee_model,
+                risk_engine=None,
+                funding_rate=funding_rate,
+                latest_funding_ts=now,
+                mode=self._market_making_config.account_name,
+                order_book_snapshot=snapshot,
+                explicit_intent=intent,
+            ):
+                intents_executed += 1
 
         signal_result = "quoted" if intents else "no_action"
         _log.info(
