@@ -95,16 +95,8 @@ def execute_one_paper_market_intent(
     if order_type == "limit":
         snapshot = order_book_snapshot
         if snapshot is None:
-            snapshot = (
-                session.execute(
-                    select(OrderBookSnapshot)
-                    .where(OrderBookSnapshot.exchange == intent.exchange)
-                    .where(OrderBookSnapshot.symbol == intent.symbol)
-                    .order_by(OrderBookSnapshot.event_ts.desc())
-                )
-                .scalars()
-                .first()
-            )
+            _log.info("limit_order_no_snapshot")
+            return False
 
         side = intent_contract.side.strip().lower()
         limit_price = intent_contract.limit_price
