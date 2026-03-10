@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   ResponsiveContainer,
-  LineChart,
+  ComposedChart,
   Line,
   XAxis,
   YAxis,
@@ -9,6 +9,7 @@ import {
   CartesianGrid,
   Legend,
   ReferenceLine,
+  ReferenceArea,
 } from 'recharts'
 
 import useMarketRange from '../../hooks/useMarketRange'
@@ -58,6 +59,19 @@ function twapDriftColor(driftBps) {
   if (abs <= 20) return 'green'
   if (abs <= 60) return 'yellow'
   return 'red'
+}
+
+function sgSlopeColor(slope) {
+  if (slope === null) return 'default'
+  if (slope < -3) return 'red'
+  if (slope < -1) return 'yellow'
+  if (slope <= 1) return 'green'
+  return 'blue'
+}
+
+function concavityColor(concavity) {
+  if (concavity === null) return 'default'
+  return concavity > 0 ? 'green' : 'red'
 }
 
 function OrderEventLabel({ viewBox, marker, tooltip }) {
@@ -160,6 +174,8 @@ export default function MarketRangePanel() {
     return (sgCurve.data ?? []).map((item) => ({
       ts: item.ts,
       sg: toPrice(item.sg),
+      slope: toPrice(item.slope),
+      concavity: toPrice(item.concavity),
     }))
   }, [sgCurve.data])
 
@@ -209,6 +225,8 @@ export default function MarketRangePanel() {
         bid: bestQuote?.bid,
         ask: bestQuote?.ask,
         sg: bestSg?.sg,
+        slope: bestSg?.slope,
+        concavity: bestSg?.concavity,
       }
     })
   }, [marketRangeData, quoteHistoryData, sgCurveData])
@@ -277,6 +295,16 @@ export default function MarketRangePanel() {
   const twapDriftText = twapDriftBps === null
     ? '—'
     : `${twapDriftBps >= 0 ? '+' : ''}${twapDriftBps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} bps`
+
+  const latestSgPoint = useMemo(() => {
+    const points = sgCurve.data ?? []
+    for (let i = points.length - 1; i >= 0; i--) {
+      if (points[i].slope != null) return points[i]
+    }
+    return null
+  }, [sgCurve.data])
+  const currentSlope = latestSgPoint !== null ? parseFloat(latestSgPoint.slope) : null
+  const currentConcavity = latestSgPoint !== null ? parseFloat(latestSgPoint.concavity) : null
 
   return (
     <div className="card p-3 flex flex-col gap-3">
@@ -350,13 +378,15 @@ export default function MarketRangePanel() {
 
       {marketRange.data && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-7 gap-2">
+          <div className="grid grid-cols-2 xl:grid-cols-9 gap-2">
             <MetricCard label="Low" value={`$${formatUSD(marketRange.data.low)}`} color="green" size="sm" />
             <MetricCard label="High" value={`$${formatUSD(marketRange.data.high)}`} color="red" size="sm" />
             <MetricCard label="Range $" value={`$${formatUSD(marketRange.data.range_usd)}`} size="sm" />
             <MetricCard label="Range bps" value={formatUSD(marketRange.data.range_bps)} size="sm" />
             <MetricCard label="Current Mid" value={`$${formatUSD(marketRange.data.current_mid)}`} color="blue" size="sm" />
             <MetricCard label="TWAP Drift" value={twapDriftText} color={twapDriftBps === null ? 'default' : twapDriftColor(twapDriftBps)} size="sm" />
+            <MetricCard label="SG Slope" value={currentSlope !== null ? currentSlope.toFixed(2) : '—'} color={sgSlopeColor(currentSlope)} size="sm" />
+            <MetricCard label="Concavity" value={currentConcavity !== null ? currentConcavity.toFixed(4) : '—'} color={concavityColor(currentConcavity)} size="sm" />
             <div className="card p-3 flex flex-col gap-1">
               <span className="label">TWAP Window</span>
               <div className="flex flex-wrap gap-1">
@@ -392,7 +422,7 @@ export default function MarketRangePanel() {
               <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No market snapshots in selected range</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={mergedChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <ComposedChart data={mergedChartData} margin={{ top: 8, right: 60, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#222632" />
                   <XAxis
                     dataKey="ts"
@@ -403,6 +433,7 @@ export default function MarketRangePanel() {
                     interval="preserveStartEnd"
                   />
                   <YAxis
+                    yAxisId="price"
                     tick={{ fill: '#555a6a', fontSize: 10 }}
                     tickLine={false}
                     axisLine={false}
@@ -410,19 +441,38 @@ export default function MarketRangePanel() {
                     tickFormatter={(value) => `$${Number(value).toLocaleString()}`}
                     domain={quoteDomain}
                   />
+                  <YAxis
+                    yAxisId="signal"
+                    orientation="right"
+                    tick={{ fill: '#555a6a', fontSize: 10 }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={52}
+                    tickFormatter={(value) => Number(value).toFixed(2)}
+                    domain={['auto', 'auto']}
+                    label={{ value: 'Signal', angle: 90, position: 'insideRight', fill: '#555a6a', fontSize: 10, dx: 12 }}
+                  />
                   <Tooltip
                     contentStyle={{ background: '#181b24', border: '1px solid #222632', borderRadius: '2px', fontSize: '11px' }}
                     labelFormatter={(_, payload) => payload?.[0]?.payload?.ts ? new Date(payload[0].payload.ts).toLocaleString() : '—'}
-                    formatter={(value, name) => [
-                      `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-                      name,
-                    ]}
+                    formatter={(value, name) => {
+                      if (name === 'Slope' || name === 'Concavity') {
+                        return [Number(value).toFixed(4), name]
+                      }
+                      return [
+                        `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                        name,
+                      ]
+                    }}
                   />
                   <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
+                  <ReferenceArea yAxisId="signal" y1={-2} y2={2} fill="green" fillOpacity={0.05} label={{ value: 'Near zero', fill: '#555a6a', fontSize: 9 }} />
+                  <ReferenceArea yAxisId="signal" y1={0} y2={0.5} fill="cyan" fillOpacity={0.03} />
                   {mappedOrderEvents.map((event, idx) => (
                     <ReferenceLine
                       key={`${event.ts}-${event.side}-${idx}`}
                       x={event.x}
+                      yAxisId="price"
                       stroke={event.marker.color}
                       strokeWidth={1}
                       strokeOpacity={0.6}
@@ -436,12 +486,14 @@ export default function MarketRangePanel() {
                       )}
                     />
                   ))}
-                  <Line dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
-                  <Line dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
-                  <Line dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls />
-                  <Line dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Ask" connectNulls />
-                  <Line dataKey="sg" stroke="#22c55e" strokeWidth={2} dot={false} name="SG" />
-                </LineChart>
+                  <Line yAxisId="price" dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
+                  <Line yAxisId="price" dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
+                  <Line yAxisId="price" dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls />
+                  <Line yAxisId="price" dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Ask" connectNulls />
+                  <Line yAxisId="price" dataKey="sg" stroke="#22c55e" strokeWidth={2} dot={false} name="SG" />
+                  <Line yAxisId="signal" dataKey="slope" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Slope" />
+                  <Line yAxisId="signal" dataKey="concavity" stroke="#06b6d4" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Concavity" />
+                </ComposedChart>
               </ResponsiveContainer>
             )}
           </div>
