@@ -231,7 +231,7 @@ export default function MarketRangePanel() {
           tooltip: `${side.toUpperCase()} | $${event.price ?? '-'} | ${status} | qty ${event.qty ?? '-'}`,
         }
       })
-      .filter(Boolean)
+        .filter((event) => event && event.status === 'filled')
   }, [quoteHistory.orderEvents, mergedChartData])
 
   const quoteDomain = useMemo(() => {
