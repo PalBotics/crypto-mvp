@@ -7,7 +7,6 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
-  ReferenceLine,
   Legend,
 } from 'recharts'
 
@@ -15,6 +14,7 @@ import useMarketRange from '../../hooks/useMarketRange'
 import useQuoteHistory from '../../hooks/useQuoteHistory'
 import LoadingState, { ErrorState } from '../common/Loading'
 import { formatUSD } from '../../utils/format'
+import MetricCard from '../common/MetricCard'
 
 const HOUR_OPTIONS = [1, 2, 4, 8, 24]
 
@@ -48,34 +48,17 @@ function yDomain(values) {
   return [low - padding, high + padding]
 }
 
-export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) {
+function twapDriftColor(driftBps) {
+  const abs = Math.abs(driftBps)
+  if (abs <= 20) return 'green'
+  if (abs <= 60) return 'yellow'
+  return 'red'
+}
+
+export default function MarketRangePanel() {
   const [hours, setHours] = useState(2)
   const marketRange = useMarketRange(hours)
   const quoteHistory = useQuoteHistory(hours)
-
-  const chartData = useMemo(() => {
-    const snapshots = marketRange.data?.snapshots ?? []
-    return snapshots
-      .map((item) => {
-        const mid = toPrice(item.mid)
-        if (mid === null) {
-          return null
-        }
-
-        return {
-          ts: item.ts,
-          time: timeLabel(item.ts),
-          mid,
-        }
-      })
-      .filter(Boolean)
-  }, [marketRange.data])
-
-  const midValues = useMemo(() => chartData.map((item) => item.mid), [chartData])
-  const domain = useMemo(() => yDomain(midValues), [midValues])
-
-  const buyLine = toPrice(buyQuote?.limit_price)
-  const sellLine = toPrice(sellQuote?.limit_price)
 
   const quoteHistoryData = useMemo(() => {
     return (quoteHistory.data ?? [])
@@ -94,6 +77,14 @@ export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) 
     const values = quoteHistoryData.flatMap((item) => [item.mid, item.twap, item.bid, item.ask]).filter((v) => v !== null)
     return yDomain(values)
   }, [quoteHistoryData])
+
+  const latestQuoteSnapshot = quoteHistoryData.length > 0 ? quoteHistoryData[quoteHistoryData.length - 1] : null
+  const twapDriftBps = latestQuoteSnapshot && latestQuoteSnapshot.twap !== 0
+    ? ((latestQuoteSnapshot.mid - latestQuoteSnapshot.twap) / latestQuoteSnapshot.twap) * 10000
+    : null
+  const twapDriftText = twapDriftBps === null
+    ? '—'
+    : `${twapDriftBps >= 0 ? '+' : ''}${twapDriftBps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} bps`
 
   return (
     <div className="card p-3 flex flex-col gap-3">
@@ -125,35 +116,26 @@ export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) 
 
       {marketRange.data && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-5 gap-2">
-            <div className="bg-surface border border-border rounded-sm p-2">
-              <div className="label">Low</div>
-              <div className="font-mono text-sm text-green">${formatUSD(marketRange.data.low)}</div>
-            </div>
-            <div className="bg-surface border border-border rounded-sm p-2">
-              <div className="label">High</div>
-              <div className="font-mono text-sm text-red">${formatUSD(marketRange.data.high)}</div>
-            </div>
-            <div className="bg-surface border border-border rounded-sm p-2">
-              <div className="label">Range $</div>
-              <div className="font-mono text-sm">${formatUSD(marketRange.data.range_usd)}</div>
-            </div>
-            <div className="bg-surface border border-border rounded-sm p-2">
-              <div className="label">Range bps</div>
-              <div className="font-mono text-sm">{formatUSD(marketRange.data.range_bps)}</div>
-            </div>
-            <div className="bg-surface border border-border rounded-sm p-2 xl:col-span-1 col-span-2">
-              <div className="label">Current Mid</div>
-              <div className="font-mono text-lg text-blue">${formatUSD(marketRange.data.current_mid)}</div>
-            </div>
+          <div className="grid grid-cols-2 xl:grid-cols-6 gap-2">
+            <MetricCard label="Low" value={`$${formatUSD(marketRange.data.low)}`} color="green" size="sm" />
+            <MetricCard label="High" value={`$${formatUSD(marketRange.data.high)}`} color="red" size="sm" />
+            <MetricCard label="Range $" value={`$${formatUSD(marketRange.data.range_usd)}`} size="sm" />
+            <MetricCard label="Range bps" value={formatUSD(marketRange.data.range_bps)} size="sm" />
+            <MetricCard label="Current Mid" value={`$${formatUSD(marketRange.data.current_mid)}`} color="blue" size="sm" />
+            <MetricCard label="TWAP Drift" value={twapDriftText} color={twapDriftBps === null ? 'default' : twapDriftColor(twapDriftBps)} size="sm" />
           </div>
 
           <div className="h-64">
-            {chartData.length === 0 ? (
-              <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No market snapshots in selected range</div>
+            <div className="label mb-2">Price, TWAP & Quotes</div>
+            {quoteHistory.loading && quoteHistoryData.length === 0 ? (
+              <LoadingState rows={4} height="100%" />
+            ) : quoteHistory.error && quoteHistoryData.length === 0 ? (
+              <ErrorState message={quoteHistory.error} onRetry={quoteHistory.refetch} height="100%" />
+            ) : quoteHistoryData.length === 0 ? (
+              <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No quote history in selected range</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <LineChart data={quoteHistoryData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#222632" />
                   <XAxis
                     dataKey="time"
@@ -168,70 +150,24 @@ export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) 
                     axisLine={false}
                     width={78}
                     tickFormatter={(value) => `$${Number(value).toLocaleString()}`}
-                    domain={domain}
+                    domain={quoteDomain}
                   />
                   <Tooltip
                     contentStyle={{ background: '#181b24', border: '1px solid #222632', borderRadius: '2px', fontSize: '11px' }}
                     labelFormatter={(_, payload) => payload?.[0]?.payload?.ts ? new Date(payload[0].payload.ts).toLocaleString() : '—'}
-                    formatter={(value) => [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Mid']}
+                    formatter={(value, name) => [
+                      `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                      name,
+                    ]}
                   />
-                  {buyLine !== null && (
-                    <ReferenceLine y={buyLine} stroke="#3b82f6" strokeDasharray="6 4" ifOverflow="extendDomain" />
-                  )}
-                  {sellLine !== null && (
-                    <ReferenceLine y={sellLine} stroke="#f97316" strokeDasharray="6 4" ifOverflow="extendDomain" />
-                  )}
+                  <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
                   <Line dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
+                  <Line dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
+                  <Line dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls />
+                  <Line dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Ask" connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             )}
-          </div>
-
-          <div className="pt-1">
-            <div className="label mb-2">Price vs TWAP & Quotes</div>
-            <div className="h-64">
-              {quoteHistory.loading && quoteHistoryData.length === 0 ? (
-                <LoadingState rows={4} height="100%" />
-              ) : quoteHistory.error && quoteHistoryData.length === 0 ? (
-                <ErrorState message={quoteHistory.error} onRetry={quoteHistory.refetch} height="100%" />
-              ) : quoteHistoryData.length === 0 ? (
-                <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No quote history in selected range</div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={quoteHistoryData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#222632" />
-                    <XAxis
-                      dataKey="time"
-                      tick={{ fill: '#555a6a', fontSize: 10 }}
-                      tickLine={false}
-                      axisLine={false}
-                      interval="preserveStartEnd"
-                    />
-                    <YAxis
-                      tick={{ fill: '#555a6a', fontSize: 10 }}
-                      tickLine={false}
-                      axisLine={false}
-                      width={78}
-                      tickFormatter={(value) => `$${Number(value).toLocaleString()}`}
-                      domain={quoteDomain}
-                    />
-                    <Tooltip
-                      contentStyle={{ background: '#181b24', border: '1px solid #222632', borderRadius: '2px', fontSize: '11px' }}
-                      labelFormatter={(_, payload) => payload?.[0]?.payload?.ts ? new Date(payload[0].payload.ts).toLocaleString() : '—'}
-                      formatter={(value, name) => [
-                        `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-                        name,
-                      ]}
-                    />
-                    <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
-                    <Line dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
-                    <Line dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
-                    <Line dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="6 4" dot={false} name="Bid" connectNulls />
-                    <Line dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="6 4" dot={false} name="Ask" connectNulls />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
           </div>
         </>
       )}

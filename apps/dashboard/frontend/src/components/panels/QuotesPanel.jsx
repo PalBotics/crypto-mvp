@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 import useQuotes from '../../hooks/useQuotes'
 import LoadingState, { ErrorState } from '../common/Loading'
 import SideTag from '../common/SideTag'
@@ -24,8 +26,38 @@ function distanceText(quote) {
   return `$${formatUSD(quote.distance_usd)} away (${formatUSD(quote.distance_bps)} bps)`
 }
 
+function quoteAge(isoTs) {
+  const ms = Date.parse(isoTs)
+  if (Number.isNaN(ms)) {
+    return { text: '—', className: 'text-text-dim' }
+  }
+
+  const ageSec = Math.max(0, Math.floor((Date.now() - ms) / 1000))
+  const minutes = Math.floor(ageSec / 60)
+  const seconds = ageSec % 60
+  const hours = Math.floor(minutes / 60)
+
+  const text = hours > 0
+    ? `${hours}h ${minutes % 60}m`
+    : `${minutes}m ${seconds}s`
+
+  if (ageSec < 60) {
+    return { text, className: 'text-green' }
+  }
+  if (ageSec <= 90) {
+    return { text, className: 'text-yellow' }
+  }
+  return { text, className: 'text-red' }
+}
+
 export default function QuotesPanel() {
   const quotes = useQuotes()
+  const [, setTick] = useState(0)
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   return (
     <div className="card p-3 flex flex-col gap-3">
@@ -48,6 +80,7 @@ export default function QuotesPanel() {
             const proximity = quoteProximity(quote.distance_bps)
             const fillPct = Math.round(proximity * 100)
             const fillColor = side === 'BUY' ? 'bg-blue' : 'bg-orange'
+            const age = quoteAge(quote.created_ts)
 
             return (
               <div key={`${quote.created_ts}-${quote.side}-${index}`} className="bg-surface border border-border rounded-sm p-3">
@@ -71,7 +104,7 @@ export default function QuotesPanel() {
 
                 <div className="flex justify-between items-center">
                   <span className="text-text-dim text-[10px] font-mono">{fillPct}% proximity</span>
-                  <TimeAgo timestamp={quote.created_ts} staleAfter={300} />
+                  <span className={`text-[10px] font-mono ${age.className}`}>Quote Age: {age.text}</span>
                 </div>
               </div>
             )

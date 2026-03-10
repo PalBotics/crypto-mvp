@@ -11,12 +11,14 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated, Generator
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.db.session import SessionLocal
+from core.models.fill_record import FillRecord
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
+from core.models.order_record import OrderRecord
 from core.models.quote_snapshot import QuoteSnapshot
 from core.reporting.queries import (
     get_recent_funding_rates,
@@ -294,4 +296,45 @@ def quote_history(
         "hours": int(hours),
         "snapshots": payload,
         "last_updated": datetime.now(timezone.utc),
+    }
+
+
+@router.get("/fill-drought")
+def fill_drought(session: SessionDep) -> dict:
+    now = datetime.now(timezone.utc)
+    midnight_utc = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    last_fill_ts = session.execute(
+        select(func.max(FillRecord.fill_ts))
+        .join(OrderRecord, FillRecord.order_record_id == OrderRecord.id)
+        .join(OrderIntent, OrderRecord.order_intent_id == OrderIntent.id)
+        .where(OrderIntent.mode == "paper_mm")
+    ).scalar_one_or_none()
+
+    fill_count_total = session.execute(
+        select(func.count(FillRecord.id))
+        .join(OrderRecord, FillRecord.order_record_id == OrderRecord.id)
+        .join(OrderIntent, OrderRecord.order_intent_id == OrderIntent.id)
+        .where(OrderIntent.mode == "paper_mm")
+    ).scalar_one()
+
+    fill_count_today = session.execute(
+        select(func.count(FillRecord.id))
+        .join(OrderRecord, FillRecord.order_record_id == OrderRecord.id)
+        .join(OrderIntent, OrderRecord.order_intent_id == OrderIntent.id)
+        .where(
+            OrderIntent.mode == "paper_mm",
+            FillRecord.fill_ts >= midnight_utc,
+        )
+    ).scalar_one()
+
+    hours_since_fill: float | None = None
+    if last_fill_ts is not None:
+        hours_since_fill = round((now - last_fill_ts).total_seconds() / 3600, 2)
+
+    return {
+        "last_fill_ts": last_fill_ts,
+        "hours_since_fill": hours_since_fill,
+        "fill_count_today": int(fill_count_today or 0),
+        "fill_count_total": int(fill_count_total or 0),
     }

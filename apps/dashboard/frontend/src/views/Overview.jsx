@@ -3,14 +3,10 @@ import PositionSummary from '../components/panels/PositionSummary'
 import QuotesPanel from '../components/panels/QuotesPanel'
 import PnLSummary from '../components/panels/PnLSummary'
 import RecentFills from '../components/panels/RecentFills'
+import FillDroughtPanel from '../components/panels/FillDroughtPanel'
 import MarketRangePanel from '../components/panels/MarketRangePanel'
-import useQuotes from '../hooks/useQuotes'
 
 export default function Overview() {
-  const quotes = useQuotes()
-  const buyQuote = quotes.data.find((quote) => String(quote.side).toLowerCase() === 'buy') ?? null
-  const sellQuote = quotes.data.find((quote) => String(quote.side).toLowerCase() === 'sell') ?? null
-
   return (
     <div className="flex flex-col gap-4 h-full">
       <SystemStatusBar />
@@ -23,7 +19,9 @@ export default function Overview() {
 
       <RecentFills />
 
-      <MarketRangePanel buyQuote={buyQuote} sellQuote={sellQuote} />
+      <FillDroughtPanel />
+
+      <MarketRangePanel />
     </div>
   )
 }
