@@ -29,7 +29,7 @@ function distanceText(quote) {
 function quoteAge(isoTs) {
   const ms = Date.parse(isoTs)
   if (Number.isNaN(ms)) {
-    return { text: '—', className: 'text-text-dim' }
+    return { text: '-', className: 'text-text-dim' }
   }
 
   const ageSec = Math.max(0, Math.floor((Date.now() - ms) / 1000))
@@ -50,13 +50,50 @@ function quoteAge(isoTs) {
   return { text, className: 'text-red' }
 }
 
+function QuoteCard({ quote, isLive }) {
+  const side = String(quote.side || '').toUpperCase()
+  const proximity = quoteProximity(quote.distance_bps)
+  const fillPct = Math.round(proximity * 100)
+  const fillColor = side === 'BUY' ? 'bg-blue' : 'bg-orange'
+  const age = quoteAge(quote.created_ts)
+  const statusLabel = isLive ? 'PENDING' : 'NOT QUOTING'
+  const statusClass = isLive ? 'text-yellow' : 'text-text-dim'
+
+  return (
+    <div className="bg-surface border border-border rounded-sm p-3">
+      <div className="flex items-center justify-between mb-2">
+        <SideTag side={side} size="xs" />
+        <span className={`text-[10px] font-mono uppercase ${statusClass}`}>{statusLabel}</span>
+      </div>
+
+      <div className="font-mono text-lg leading-none mb-2">
+        {quote.limit_price ? `$${formatUSD(quote.limit_price)}` : '-'}
+      </div>
+
+      <div className="text-text-secondary text-xs mb-2">{distanceText(quote)}</div>
+
+      <div className="w-full h-2 bg-muted rounded-sm overflow-hidden mb-2">
+        <div
+          className={`${fillColor} h-full transition-all duration-300`}
+          style={{ width: `${fillPct}%` }}
+        />
+      </div>
+
+      <div className="flex justify-between items-center">
+        <span className="text-text-dim text-[10px] font-mono">{fillPct}% proximity</span>
+        <span className={`text-[10px] font-mono ${age.className}`}>Quote Age: {age.text}</span>
+      </div>
+    </div>
+  )
+}
+
 export default function QuotesPanel() {
-  const quotes = useQuotes()
+  const { data, lastKnown, apiLastUpdated, loading, error, lastUpdated, refetch } = useQuotes()
   const [, setTick] = useState(0)
-  const liveQuotes = quotes.data ?? []
-  const lastKnownQuotes = quotes.lastKnownData ?? []
-  const usingLastKnown = liveQuotes.length === 0 && lastKnownQuotes.length > 0
-  const displayQuotes = liveQuotes.length > 0 ? liveQuotes : lastKnownQuotes
+  const isLive = data.length > 0
+  const displayQuotes = isLive ? data : lastKnown
+  const buyQuote = displayQuotes.find((q) => q.side === 'buy')
+  const sellQuote = displayQuotes.find((q) => q.side === 'sell')
 
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 1000)
@@ -66,67 +103,34 @@ export default function QuotesPanel() {
   return (
     <div className="card p-3 flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <span className="label">Active Quotes</span>
-        <TimeAgo timestamp={quotes.apiLastUpdated || quotes.lastUpdated} staleAfter={120} />
+        <span className="label">Quotes</span>
+        <TimeAgo timestamp={apiLastUpdated || lastUpdated} staleAfter={120} />
       </div>
 
-      {quotes.loading && <LoadingState rows={3} />}
-      {quotes.error && <ErrorState message={quotes.error} onRetry={quotes.refetch} />}
+      {loading && <LoadingState rows={3} />}
+      {error && <ErrorState message={error} onRetry={refetch} />}
 
-      {!quotes.loading && !quotes.error && displayQuotes.length === 0 && (
-        <div className="bg-surface border border-border rounded-sm p-3">
-          <div className="flex items-center justify-between mb-2">
-            <SideTag side="BUY" size="xs" />
-            <span className="text-text-dim text-[10px] font-mono uppercase">Awaiting first quote</span>
-          </div>
-          <div className="font-mono text-lg leading-none mb-2 text-text-dim">—</div>
-          <div className="text-text-secondary text-xs mb-2">Awaiting first quote</div>
-          <div className="w-full h-2 bg-muted rounded-sm overflow-hidden mb-2" />
-          <div className="flex justify-between items-center">
-            <span className="text-text-dim text-[10px] font-mono">0% proximity</span>
-            <span className="text-[10px] font-mono text-text-dim">Quote Age: —</span>
-          </div>
-        </div>
-      )}
-
-      {!quotes.loading && !quotes.error && displayQuotes.length > 0 && (
+      {!loading && !error && (
         <div className="flex flex-col gap-3">
-          {displayQuotes.map((quote, index) => {
-            const side = String(quote.side || '').toUpperCase()
-            const proximity = quoteProximity(quote.distance_bps)
-            const fillPct = Math.round(proximity * 100)
-            const fillColor = side === 'BUY' ? 'bg-blue' : 'bg-orange'
-            const age = quoteAge(quote.created_ts)
-            const statusLabel = usingLastKnown ? 'NOT QUOTING' : 'PENDING'
-            const statusClass = usingLastKnown ? 'text-text-dim' : 'text-yellow'
-
-            return (
-              <div key={`${quote.created_ts}-${quote.side}-${index}`} className="bg-surface border border-border rounded-sm p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <SideTag side={side} size="xs" />
-                  <span className={`text-[10px] font-mono uppercase ${statusClass}`}>{statusLabel}</span>
-                </div>
-
-                <div className="font-mono text-lg leading-none mb-2">
-                  {quote.limit_price ? `$${formatUSD(quote.limit_price)}` : '—'}
-                </div>
-
-                <div className="text-text-secondary text-xs mb-2">{distanceText(quote)}</div>
-
-                <div className="w-full h-2 bg-muted rounded-sm overflow-hidden mb-2">
-                  <div
-                    className={`${fillColor} h-full transition-all duration-300`}
-                    style={{ width: `${fillPct}%` }}
-                  />
-                </div>
-
-                <div className="flex justify-between items-center">
-                  <span className="text-text-dim text-[10px] font-mono">{fillPct}% proximity</span>
-                  <span className={`text-[10px] font-mono ${age.className}`}>Quote Age: {age.text}</span>
-                </div>
+          {buyQuote ? (
+            <QuoteCard quote={buyQuote} isLive={isLive} />
+          ) : (
+            <div className="bg-surface border border-border rounded-sm p-3">
+              <div className="flex items-center justify-between mb-2">
+                <SideTag side="BUY" size="xs" />
+                <span className="text-text-dim text-[10px] font-mono uppercase">Awaiting first quote</span>
               </div>
-            )
-          })}
+              <div className="font-mono text-lg leading-none mb-2 text-text-dim">BUY - Awaiting first quote</div>
+              <div className="text-text-secondary text-xs mb-2">Awaiting first quote</div>
+              <div className="w-full h-2 bg-muted rounded-sm overflow-hidden mb-2" />
+              <div className="flex justify-between items-center">
+                <span className="text-text-dim text-[10px] font-mono">0% proximity</span>
+                <span className="text-[10px] font-mono text-text-dim">Quote Age: -</span>
+              </div>
+            </div>
+          )}
+
+          {sellQuote && <QuoteCard quote={sellQuote} isLive={isLive} />}
         </div>
       )}
     </div>

@@ -7,18 +7,18 @@ export default function useQuotes() {
     interval: 10000,
   })
 
-  const lastKnownRef = useRef([])
+  const lastKnownQuotes = useRef([])
 
   useEffect(() => {
-    const liveQuotes = data?.quotes ?? []
-    if (liveQuotes.length > 0) {
-      lastKnownRef.current = liveQuotes
+    const newData = data?.quotes ?? []
+    if (newData.length > 0) {
+      lastKnownQuotes.current = newData
     }
   }, [data])
 
   return {
     data: data?.quotes ?? [],
-    lastKnownData: lastKnownRef.current,
+    lastKnown: lastKnownQuotes.current,
     apiLastUpdated: data?.last_updated ?? null,
     loading,
     error,
