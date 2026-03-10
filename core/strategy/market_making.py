@@ -100,14 +100,25 @@ class MarketMakingStrategy:
                     current_ts=current_ts,
                 )
             )
+        else:
+            _log.info(
+                "buy_suppressed_max_inventory",
+                current_position=str(current_position),
+                max_inventory=str(self.config.max_inventory),
+            )
 
-        if current_position > -self.config.max_inventory:
+        if current_position > Decimal("0"):
             intents.append(
                 self._build_intent(
                     side="sell",
                     limit_price=ask_price,
                     current_ts=current_ts,
                 )
+            )
+        else:
+            _log.info(
+                "sell_suppressed_no_inventory",
+                current_position=str(current_position),
             )
 
         _log.info(

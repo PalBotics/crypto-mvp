@@ -56,7 +56,7 @@ def test_generates_bid_and_ask_when_conditions_met() -> None:
     intents = strategy.evaluate(
         session=Mock(),
         order_book=_order_book(),
-        current_position=Decimal("0"),
+        current_position=Decimal("0.001"),
         current_ts=datetime.now(timezone.utc),
     )
 
@@ -69,6 +69,35 @@ def test_generates_bid_and_ask_when_conditions_met() -> None:
 
 
 def test_suppresses_bid_at_max_long_inventory() -> None:
+    config = _config()
+    strategy = MarketMakingStrategy(config)
+
+    intents = strategy.evaluate(
+        session=Mock(),
+        order_book=_order_book(),
+        current_position=config.max_inventory,
+        current_ts=datetime.now(timezone.utc),
+    )
+
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+
+
+def test_suppresses_sell_when_no_inventory() -> None:
+    strategy = MarketMakingStrategy(_config())
+
+    intents = strategy.evaluate(
+        session=Mock(),
+        order_book=_order_book(),
+        current_position=Decimal("0"),
+        current_ts=datetime.now(timezone.utc),
+    )
+
+    assert len(intents) == 1
+    assert intents[0].side == "buy"
+
+
+def test_suppresses_buy_when_at_max_inventory() -> None:
     config = _config()
     strategy = MarketMakingStrategy(config)
 
@@ -132,7 +161,7 @@ def test_bid_price_below_mid_ask_price_above_mid() -> None:
     intents = strategy.evaluate(
         session=Mock(),
         order_book=book,
-        current_position=Decimal("0"),
+        current_position=Decimal("0.001"),
         current_ts=datetime.now(timezone.utc),
     )
 
