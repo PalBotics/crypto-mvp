@@ -53,6 +53,10 @@ function quoteAge(isoTs) {
 export default function QuotesPanel() {
   const quotes = useQuotes()
   const [, setTick] = useState(0)
+  const liveQuotes = quotes.data ?? []
+  const lastKnownQuotes = quotes.lastKnownData ?? []
+  const usingLastKnown = liveQuotes.length === 0 && lastKnownQuotes.length > 0
+  const displayQuotes = liveQuotes.length > 0 ? liveQuotes : lastKnownQuotes
 
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 1000)
@@ -69,24 +73,38 @@ export default function QuotesPanel() {
       {quotes.loading && <LoadingState rows={3} />}
       {quotes.error && <ErrorState message={quotes.error} onRetry={quotes.refetch} />}
 
-      {!quotes.loading && !quotes.error && quotes.data.length === 0 && (
-        <div className="text-text-dim font-mono text-xs py-4 text-center">No active quotes</div>
+      {!quotes.loading && !quotes.error && displayQuotes.length === 0 && (
+        <div className="bg-surface border border-border rounded-sm p-3">
+          <div className="flex items-center justify-between mb-2">
+            <SideTag side="BUY" size="xs" />
+            <span className="text-text-dim text-[10px] font-mono uppercase">Awaiting first quote</span>
+          </div>
+          <div className="font-mono text-lg leading-none mb-2 text-text-dim">—</div>
+          <div className="text-text-secondary text-xs mb-2">Awaiting first quote</div>
+          <div className="w-full h-2 bg-muted rounded-sm overflow-hidden mb-2" />
+          <div className="flex justify-between items-center">
+            <span className="text-text-dim text-[10px] font-mono">0% proximity</span>
+            <span className="text-[10px] font-mono text-text-dim">Quote Age: —</span>
+          </div>
+        </div>
       )}
 
-      {!quotes.loading && !quotes.error && quotes.data.length > 0 && (
+      {!quotes.loading && !quotes.error && displayQuotes.length > 0 && (
         <div className="flex flex-col gap-3">
-          {quotes.data.map((quote, index) => {
+          {displayQuotes.map((quote, index) => {
             const side = String(quote.side || '').toUpperCase()
             const proximity = quoteProximity(quote.distance_bps)
             const fillPct = Math.round(proximity * 100)
             const fillColor = side === 'BUY' ? 'bg-blue' : 'bg-orange'
             const age = quoteAge(quote.created_ts)
+            const statusLabel = usingLastKnown ? 'NOT QUOTING' : 'PENDING'
+            const statusClass = usingLastKnown ? 'text-text-dim' : 'text-yellow'
 
             return (
               <div key={`${quote.created_ts}-${quote.side}-${index}`} className="bg-surface border border-border rounded-sm p-3">
                 <div className="flex items-center justify-between mb-2">
                   <SideTag side={side} size="xs" />
-                  <span className="text-text-dim text-[10px] font-mono uppercase">{quote.status}</span>
+                  <span className={`text-[10px] font-mono uppercase ${statusClass}`}>{statusLabel}</span>
                 </div>
 
                 <div className="font-mono text-lg leading-none mb-2">
