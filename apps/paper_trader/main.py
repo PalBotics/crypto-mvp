@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import json
 import os
+from pathlib import Path
 import signal
 import time
 
@@ -25,6 +27,8 @@ from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
 from core.utils.logging import get_logger
 
 _log = get_logger(__name__)
+TWAP_OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "data" / "twap_lookback_override.json"
+ALLOWED_TWAP_HOURS = {1, 2, 4, 8, 24}
 
 
 @dataclass(frozen=True)
@@ -233,6 +237,8 @@ class PaperTradingLoop:
         if self._market_making_config is None:
             raise ValueError("market_making_config is required for market_making mode")
 
+        self._apply_twap_lookback_override(strategy)
+
         snapshot = (
             self._session.execute(
                 select(OrderBookSnapshot)
@@ -260,6 +266,7 @@ class PaperTradingLoop:
         # 1) Re-check all existing pending intents against the current snapshot.
         pending_intents = self._session.execute(pending_stmt).scalars().all()
         intents_executed = 0
+        post_fill_requotes = 0
         for intent in pending_intents:
             if execute_one_paper_market_intent(
                 session=self._session,
@@ -272,6 +279,25 @@ class PaperTradingLoop:
                 explicit_intent=intent,
             ):
                 intents_executed += 1
+
+                # If a fill drained all pending intents, immediately re-quote in this cycle.
+                # This avoids gaps where no active quote is visible until the next loop tick.
+                pending_now = self._session.execute(pending_stmt).scalars().all()
+                if not pending_now:
+                    generated = self._generate_and_persist_quotes(
+                        strategy=strategy,
+                        snapshot=snapshot,
+                        current_ts=now,
+                    )
+                    if generated > 0:
+                        post_fill_requotes += 1
+                        quote_ctx = strategy.last_quote_context
+                        _log.info(
+                            "post_fill_requote",
+                            bid_price=(str(quote_ctx.bid_quote) if quote_ctx is not None else None),
+                            ask_price=(str(quote_ctx.ask_quote) if quote_ctx is not None else None),
+                            intents_generated=generated,
+                        )
 
         # 2) Cancel stale pending intents that survived this cycle's re-check.
         stale_cutoff = now - timedelta(seconds=self._market_making_config.stale_book_seconds)
@@ -296,44 +322,11 @@ class PaperTradingLoop:
         remaining_pending = self._session.execute(pending_stmt).scalars().all()
         intents_generated = 0
         if not remaining_pending:
-            current_position = self._current_position(
-                exchange=strategy.config.exchange,
-                symbol=strategy.config.symbol,
-                account_name=self._market_making_config.account_name,
+            intents_generated = self._generate_and_persist_quotes(
+                strategy=strategy,
+                snapshot=snapshot,
+                current_ts=now,
             )
-            intents = strategy.evaluate(
-                self._session,
-                snapshot,
-                current_position,
-                now,
-            )
-
-            for intent in intents:
-                intent.mode = self._market_making_config.account_name
-                self._session.add(intent)
-
-            quote_ctx = strategy.last_quote_context
-            if quote_ctx is not None:
-                bid_intent = next((intent for intent in intents if intent.side == "buy"), None)
-                ask_intent = next((intent for intent in intents if intent.side == "sell"), None)
-                quote_snapshot = QuoteSnapshot(
-                    exchange=self._market_making_config.exchange,
-                    symbol=self._market_making_config.symbol,
-                    account_name=self._market_making_config.account_name,
-                    snapshot_ts=now,
-                    twap=quote_ctx.twap,
-                    mid_price=quote_ctx.current_mid,
-                    bid_quote=bid_intent.limit_price if bid_intent is not None else None,
-                    ask_quote=ask_intent.limit_price if ask_intent is not None else None,
-                    twap_lookback_hours=self._market_making_config.twap_lookback_hours,
-                    spread_bps=self._market_making_config.spread_bps,
-                )
-                self._session.add(quote_snapshot)
-
-            intents_generated = len(intents)
-            self._session.flush()
-        else:
-            intents = []
 
         signal_result = "quoted" if intents_generated > 0 else "no_action"
         _log.info(
@@ -342,9 +335,81 @@ class PaperTradingLoop:
             signal=signal_result,
             intents_generated=intents_generated,
             intents_executed=intents_executed,
+            post_fill_requotes=post_fill_requotes,
             pending_remaining=len(remaining_pending),
         )
         return signal_result, intents_executed, None
+
+    def _generate_and_persist_quotes(
+        self,
+        strategy: MarketMakingStrategy,
+        snapshot: OrderBookSnapshot,
+        current_ts: datetime,
+    ) -> int:
+        if self._market_making_config is None:
+            return 0
+
+        current_position = self._current_position(
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+            account_name=self._market_making_config.account_name,
+        )
+        intents = strategy.evaluate(
+            self._session,
+            snapshot,
+            current_position,
+            current_ts,
+        )
+
+        for intent in intents:
+            intent.mode = self._market_making_config.account_name
+            self._session.add(intent)
+
+        quote_ctx = strategy.last_quote_context
+        if quote_ctx is not None:
+            bid_intent = next((intent for intent in intents if intent.side == "buy"), None)
+            ask_intent = next((intent for intent in intents if intent.side == "sell"), None)
+            quote_snapshot = QuoteSnapshot(
+                exchange=self._market_making_config.exchange,
+                symbol=self._market_making_config.symbol,
+                account_name=self._market_making_config.account_name,
+                snapshot_ts=current_ts,
+                twap=quote_ctx.twap,
+                mid_price=quote_ctx.current_mid,
+                bid_quote=bid_intent.limit_price if bid_intent is not None else None,
+                ask_quote=ask_intent.limit_price if ask_intent is not None else None,
+                twap_lookback_hours=self._market_making_config.twap_lookback_hours,
+                spread_bps=self._market_making_config.spread_bps,
+            )
+            self._session.add(quote_snapshot)
+
+        self._session.flush()
+        return len(intents)
+
+    def _apply_twap_lookback_override(self, strategy: MarketMakingStrategy) -> None:
+        if not TWAP_OVERRIDE_PATH.exists() or self._market_making_config is None:
+            return
+
+        try:
+            payload = json.loads(TWAP_OVERRIDE_PATH.read_text(encoding="utf-8"))
+            new_hours = int(payload.get("hours"))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return
+
+        if new_hours not in ALLOWED_TWAP_HOURS:
+            return
+
+        old_hours = self._market_making_config.twap_lookback_hours
+        if new_hours == old_hours:
+            return
+
+        self._market_making_config = replace(self._market_making_config, twap_lookback_hours=new_hours)
+        strategy.config = self._market_making_config
+        _log.info(
+            "twap_lookback_override_applied",
+            old_hours=old_hours,
+            new_hours=new_hours,
+        )
 
     def _current_position(self, exchange: str, symbol: str, account_name: str) -> Decimal:
         latest = (
