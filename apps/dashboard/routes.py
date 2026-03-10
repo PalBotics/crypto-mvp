@@ -6,11 +6,11 @@ Session is injected via FastAPI dependency injection.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated, Generator
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -192,5 +192,59 @@ def quotes(session: SessionDep) -> dict:
 
     return {
         "quotes": quote_items,
+        "last_updated": datetime.now(timezone.utc),
+    }
+
+
+@router.get("/market-range")
+def market_range(
+    session: SessionDep,
+    hours: Annotated[int, Query()] = 2,
+) -> dict:
+    allowed_hours = {1, 2, 4, 8, 24}
+    if hours not in allowed_hours:
+        raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+
+    snapshots = session.execute(
+        select(OrderBookSnapshot)
+        .where(
+            OrderBookSnapshot.exchange == "kraken",
+            OrderBookSnapshot.symbol == "XBTUSD",
+            OrderBookSnapshot.event_ts > cutoff,
+        )
+        .order_by(OrderBookSnapshot.event_ts.asc())
+    ).scalars().all()
+
+    mids = [snap.mid_price for snap in snapshots if snap.mid_price is not None]
+    low = min(mids) if mids else None
+    high = max(mids) if mids else None
+    current_mid = snapshots[-1].mid_price if snapshots else None
+
+    range_usd: Decimal | None = None
+    range_bps: Decimal | None = None
+    if low is not None and high is not None:
+        range_usd = _round_decimal(high - low, USD_QUANT)
+
+    if range_usd is not None and current_mid not in (None, Decimal("0")):
+        range_bps = _round_decimal((range_usd / current_mid) * Decimal("10000"), BPS_QUANT)
+
+    return {
+        "hours": int(hours),
+        "low": None if low is None else str(low),
+        "high": None if high is None else str(high),
+        "range_usd": None if range_usd is None else str(range_usd),
+        "range_bps": None if range_bps is None else str(range_bps),
+        "current_mid": None if current_mid is None else str(current_mid),
+        "snapshots": [
+            {
+                "ts": snap.event_ts,
+                "mid": None if snap.mid_price is None else str(snap.mid_price),
+                "bid": None if snap.bid_price_1 is None else str(snap.bid_price_1),
+                "ask": None if snap.ask_price_1 is None else str(snap.ask_price_1),
+            }
+            for snap in snapshots
+        ],
         "last_updated": datetime.now(timezone.utc),
     }
