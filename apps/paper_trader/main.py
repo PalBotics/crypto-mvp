@@ -368,6 +368,11 @@ class PaperTradingLoop:
             symbol=strategy.config.symbol,
             account_name=self._market_making_config.account_name,
         )
+        avg_entry_price = self._latest_avg_entry_price(
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+            account_name=self._market_making_config.account_name,
+        )
         account_snapshot = compute_paper_account_snapshot(
             session=self._session,
             account_name=self._market_making_config.account_name,
@@ -380,6 +385,7 @@ class PaperTradingLoop:
             current_position,
             current_ts,
             account_value=account_snapshot.account_value,
+            avg_entry_price=avg_entry_price,
         )
 
         # Query for any already-resting pending intents BEFORE adding new ones to the
@@ -486,6 +492,27 @@ class PaperTradingLoop:
         qty = Decimal(str(latest.quantity))
         side = (latest.side or "").strip().lower()
         return qty if side == "buy" else -qty
+
+    def _latest_avg_entry_price(
+        self,
+        exchange: str,
+        symbol: str,
+        account_name: str,
+    ) -> Decimal | None:
+        latest = (
+            self._session.execute(
+                select(PositionSnapshot)
+                .where(PositionSnapshot.exchange == exchange)
+                .where(PositionSnapshot.symbol == symbol)
+                .where(PositionSnapshot.account_name == account_name)
+                .order_by(PositionSnapshot.snapshot_ts.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if latest is None or latest.avg_entry_price is None:
+            return None
+        return Decimal(str(latest.avg_entry_price))
 
 
 def main() -> None:

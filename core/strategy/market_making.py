@@ -55,6 +55,7 @@ class MarketMakingStrategy:
         current_position: Decimal,
         current_ts: datetime,
         account_value: Decimal | None = None,
+        avg_entry_price: Decimal | None = None,
     ) -> list[OrderIntent]:
         self.last_quote_context = None
 
@@ -126,6 +127,20 @@ class MarketMakingStrategy:
         half_spread = self.config.spread_bps / Decimal("2") / Decimal("10000")
         bid_price = self._round_price(twap * (Decimal("1") - half_spread))
         ask_price = self._round_price(twap * (Decimal("1") + half_spread))
+
+        if current_position > Decimal("0") and avg_entry_price is not None:
+            required_bps = (self.config.spread_bps * Decimal("2")) + self.config.min_profit_bps
+            required_markup = required_bps / Decimal("10000")
+            cost_basis_ask = self._round_price(avg_entry_price * (Decimal("1") + required_markup))
+            if cost_basis_ask > ask_price:
+                ask_price = cost_basis_ask
+                _log.info(
+                    "cost_basis_sell_applied",
+                    avg_entry_price=str(avg_entry_price),
+                    min_profit_bps=str(self.config.min_profit_bps),
+                    spread_bps=str(self.config.spread_bps),
+                    ask_price=str(ask_price),
+                )
 
         quote_size = self.config.quote_size
         max_inventory = self.config.max_inventory
