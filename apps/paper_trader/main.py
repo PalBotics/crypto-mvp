@@ -382,14 +382,51 @@ class PaperTradingLoop:
             account_value=account_snapshot.account_value,
         )
 
+        # Query for any already-resting pending intents BEFORE adding new ones to the
+        # session.  SQLAlchemy autoflush means that once we call session.add() the new
+        # intents (status="pending") would pollute a subsequent DB query.  We want to
+        # capture only intents that were already sitting in the market from a prior cycle
+        # so that the QuoteSnapshot reflects the actual resting order prices.
+        quote_ctx = strategy.last_quote_context
+        existing_pending: dict[str, OrderIntent] = {}
+        if quote_ctx is not None:
+            for _side in ("buy", "sell"):
+                _existing = self._session.execute(
+                    select(OrderIntent)
+                    .where(OrderIntent.mode == self._market_making_config.account_name)
+                    .where(OrderIntent.exchange == strategy.config.exchange)
+                    .where(OrderIntent.symbol == strategy.config.symbol)
+                    .where(OrderIntent.status == "pending")
+                    .where(OrderIntent.side == _side)
+                    .order_by(OrderIntent.created_ts.asc())
+                    .limit(1)
+                ).scalars().first()
+                if _existing is not None:
+                    existing_pending[_side] = _existing
+
         for intent in intents:
             intent.mode = self._market_making_config.account_name
             self._session.add(intent)
 
-        quote_ctx = strategy.last_quote_context
         if quote_ctx is not None:
             bid_intent = next((intent for intent in intents if intent.side == "buy"), None)
             ask_intent = next((intent for intent in intents if intent.side == "sell"), None)
+
+            # Prefer the price of any already-resting pending intent over the newly
+            # generated hypothetical price.  This keeps the Ask line on the chart
+            # pinned to the real sell order (e.g. cost-basis priced) rather than
+            # drifting with each cycle's TWAP computation.
+            bid_quote = (
+                existing_pending["buy"].limit_price
+                if "buy" in existing_pending
+                else (bid_intent.limit_price if bid_intent is not None else None)
+            )
+            ask_quote = (
+                existing_pending["sell"].limit_price
+                if "sell" in existing_pending
+                else (ask_intent.limit_price if ask_intent is not None else None)
+            )
+
             quote_snapshot = QuoteSnapshot(
                 exchange=self._market_making_config.exchange,
                 symbol=self._market_making_config.symbol,
@@ -397,8 +434,8 @@ class PaperTradingLoop:
                 snapshot_ts=current_ts,
                 twap=quote_ctx.twap,
                 mid_price=quote_ctx.current_mid,
-                bid_quote=bid_intent.limit_price if bid_intent is not None else None,
-                ask_quote=ask_intent.limit_price if ask_intent is not None else None,
+                bid_quote=bid_quote,
+                ask_quote=ask_quote,
                 twap_lookback_hours=self._market_making_config.twap_lookback_hours,
                 spread_bps=self._market_making_config.spread_bps,
             )
