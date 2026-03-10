@@ -50,11 +50,17 @@ def _order_book(*, spread_bps: Decimal = Decimal("8"), event_ts: datetime | None
     )
 
 
+def _session_with_twap(*, snapshot_count: int = 3, twap: Decimal = Decimal("60000")) -> Mock:
+    session = Mock()
+    session.execute.return_value.one.return_value = (snapshot_count, twap)
+    return session
+
+
 def test_generates_bid_and_ask_when_conditions_met() -> None:
     strategy = MarketMakingStrategy(_config())
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=_order_book(),
         current_position=Decimal("0.001"),
         current_ts=datetime.now(timezone.utc),
@@ -73,7 +79,7 @@ def test_suppresses_bid_at_max_long_inventory() -> None:
     strategy = MarketMakingStrategy(config)
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=_order_book(),
         current_position=config.max_inventory,
         current_ts=datetime.now(timezone.utc),
@@ -87,7 +93,7 @@ def test_suppresses_sell_when_no_inventory() -> None:
     strategy = MarketMakingStrategy(_config())
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=_order_book(),
         current_position=Decimal("0"),
         current_ts=datetime.now(timezone.utc),
@@ -102,7 +108,7 @@ def test_suppresses_buy_when_at_max_inventory() -> None:
     strategy = MarketMakingStrategy(config)
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=_order_book(),
         current_position=config.max_inventory,
         current_ts=datetime.now(timezone.utc),
@@ -117,7 +123,7 @@ def test_suppresses_ask_at_max_short_inventory() -> None:
     strategy = MarketMakingStrategy(config)
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=_order_book(),
         current_position=-config.max_inventory,
         current_ts=datetime.now(timezone.utc),
@@ -159,7 +165,7 @@ def test_bid_price_below_mid_ask_price_above_mid() -> None:
     book = _order_book()
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=book,
         current_position=Decimal("0.001"),
         current_ts=datetime.now(timezone.utc),
@@ -176,7 +182,7 @@ def test_prices_rounded_to_one_decimal_place() -> None:
     book = _order_book()
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=book,
         current_position=Decimal("0"),
         current_ts=datetime.now(timezone.utc),
@@ -193,7 +199,7 @@ def test_intent_fields_are_correct() -> None:
     strategy = MarketMakingStrategy(config)
 
     intents = strategy.evaluate(
-        session=Mock(),
+        session=_session_with_twap(),
         order_book=_order_book(),
         current_position=Decimal("0"),
         current_ts=datetime.now(timezone.utc),
@@ -206,3 +212,24 @@ def test_intent_fields_are_correct() -> None:
         assert intent.strategy_name == "market_making"
         assert intent.status == "pending"
         assert intent.reduce_only is False
+
+
+def test_twap_insufficient_data_falls_back_to_current_mid() -> None:
+    strategy = MarketMakingStrategy(_config())
+    book = _order_book()
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(snapshot_count=1, twap=Decimal("59900")),
+        order_book=book,
+        current_position=Decimal("0.001"),
+        current_ts=datetime.now(timezone.utc),
+    )
+
+    bid = next(i for i in intents if i.side == "buy")
+    ask = next(i for i in intents if i.side == "sell")
+
+    assert bid.limit_price == Decimal("59940.0")
+    assert ask.limit_price == Decimal("60060.0")
+    assert strategy.last_quote_context is not None
+    assert strategy.last_quote_context.snapshot_count == 1
+    assert strategy.last_quote_context.twap == book.mid_price

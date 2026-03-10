@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.models.order_book_snapshot import OrderBookSnapshot
@@ -23,11 +24,26 @@ class MarketMakingConfig:
     max_inventory: Decimal = Decimal("0.01")
     min_spread_bps: Decimal = Decimal("0.01")
     stale_book_seconds: int = 120
+    twap_lookback_hours: int = 2
+
+    def __post_init__(self) -> None:
+        if self.twap_lookback_hours not in {1, 2, 4, 8, 24}:
+            raise ValueError("twap_lookback_hours must be one of: 1, 2, 4, 8, 24")
+
+
+@dataclass(frozen=True)
+class QuoteContext:
+    twap: Decimal
+    current_mid: Decimal
+    bid_quote: Decimal
+    ask_quote: Decimal
+    snapshot_count: int
 
 
 class MarketMakingStrategy:
     def __init__(self, config: MarketMakingConfig) -> None:
         self.config = config
+        self.last_quote_context: QuoteContext | None = None
 
     def evaluate(
         self,
@@ -36,7 +52,7 @@ class MarketMakingStrategy:
         current_position: Decimal,
         current_ts: datetime,
     ) -> list[OrderIntent]:
-        del session  # Caller owns transaction/session lifecycle; evaluate is pure signal generation.
+        self.last_quote_context = None
 
         age_seconds = (current_ts - order_book.event_ts).total_seconds()
         if age_seconds > self.config.stale_book_seconds:
@@ -86,9 +102,26 @@ class MarketMakingStrategy:
             _log.info("market_making_signal_generated", intents_generated=0)
             return []
 
+        twap, snapshot_count = self._calculate_twap(
+            session=session,
+            current_ts=current_ts,
+            current_mid=order_book.mid_price,
+        )
+        twap_vs_mid_bps = Decimal("0")
+        if order_book.mid_price != Decimal("0"):
+            twap_vs_mid_bps = ((twap - order_book.mid_price) / order_book.mid_price) * Decimal("10000")
+        _log.info(
+            "twap_calculated",
+            twap=str(twap),
+            current_mid=str(order_book.mid_price),
+            twap_lookback_hours=self.config.twap_lookback_hours,
+            snapshot_count=snapshot_count,
+            twap_vs_mid_bps=str(twap_vs_mid_bps.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
+        )
+
         half_spread = self.config.spread_bps / Decimal("2") / Decimal("10000")
-        bid_price = self._round_price(order_book.mid_price * (Decimal("1") - half_spread))
-        ask_price = self._round_price(order_book.mid_price * (Decimal("1") + half_spread))
+        bid_price = self._round_price(twap * (Decimal("1") - half_spread))
+        ask_price = self._round_price(twap * (Decimal("1") + half_spread))
 
         intents: list[OrderIntent] = []
 
@@ -124,6 +157,7 @@ class MarketMakingStrategy:
         _log.info(
             "market_making_signal_generated",
             mid_price=str(order_book.mid_price),
+            twap=str(twap),
             bid_price=str(bid_price),
             ask_price=str(ask_price),
             market_spread_bps=str(market_spread_bps),
@@ -132,7 +166,41 @@ class MarketMakingStrategy:
             intents_generated=len(intents),
         )
 
+        self.last_quote_context = QuoteContext(
+            twap=twap,
+            current_mid=order_book.mid_price,
+            bid_quote=bid_price,
+            ask_quote=ask_price,
+            snapshot_count=snapshot_count,
+        )
+
         return intents
+
+    def _calculate_twap(
+        self,
+        session: Session,
+        current_ts: datetime,
+        current_mid: Decimal,
+    ) -> tuple[Decimal, int]:
+        cutoff = current_ts - timedelta(hours=self.config.twap_lookback_hours)
+        snapshot_count, avg_mid = session.execute(
+            select(
+                func.count(OrderBookSnapshot.id),
+                func.avg(OrderBookSnapshot.mid_price),
+            ).where(
+                OrderBookSnapshot.exchange == self.config.exchange,
+                OrderBookSnapshot.symbol == self.config.symbol,
+                OrderBookSnapshot.mid_price.is_not(None),
+                OrderBookSnapshot.event_ts > cutoff,
+            )
+        ).one()
+
+        count = int(snapshot_count or 0)
+        if count < 2 or avg_mid is None:
+            _log.info("twap_insufficient_data", snapshot_count=count)
+            return current_mid, count
+
+        return Decimal(str(avg_mid)), count
 
     @staticmethod
     def _round_price(price: Decimal) -> Decimal:

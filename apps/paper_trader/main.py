@@ -15,6 +15,7 @@ from core.alerting.evaluator import AlertEvaluator
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.models.order_intent import OrderIntent
+from core.models.quote_snapshot import QuoteSnapshot
 from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
@@ -311,6 +312,24 @@ class PaperTradingLoop:
                 intent.mode = self._market_making_config.account_name
                 self._session.add(intent)
 
+            quote_ctx = strategy.last_quote_context
+            if quote_ctx is not None:
+                bid_intent = next((intent for intent in intents if intent.side == "buy"), None)
+                ask_intent = next((intent for intent in intents if intent.side == "sell"), None)
+                quote_snapshot = QuoteSnapshot(
+                    exchange=self._market_making_config.exchange,
+                    symbol=self._market_making_config.symbol,
+                    account_name=self._market_making_config.account_name,
+                    snapshot_ts=now,
+                    twap=quote_ctx.twap,
+                    mid_price=quote_ctx.current_mid,
+                    bid_quote=bid_intent.limit_price if bid_intent is not None else None,
+                    ask_quote=ask_intent.limit_price if ask_intent is not None else None,
+                    twap_lookback_hours=self._market_making_config.twap_lookback_hours,
+                    spread_bps=self._market_making_config.spread_bps,
+                )
+                self._session.add(quote_snapshot)
+
             intents_generated = len(intents)
             self._session.flush()
         else:
@@ -377,6 +396,8 @@ def main() -> None:
     max_inventory = Decimal(_inventory) if _inventory is not None else None
     _min_spread = os.environ.get("MM_MIN_SPREAD_BPS")
     min_spread_bps = Decimal(_min_spread) if _min_spread is not None else None
+    _twap = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
+    twap_lookback_hours = int(_twap) if _twap is not None else None
 
     mm_kwargs = {
         "account_name": os.environ.get("MM_ACCOUNT_NAME", "paper_mm"),
@@ -391,6 +412,8 @@ def main() -> None:
         mm_kwargs["min_spread_bps"] = min_spread_bps
     if stale_book_seconds is not None:
         mm_kwargs["stale_book_seconds"] = stale_book_seconds
+    if twap_lookback_hours is not None:
+        mm_kwargs["twap_lookback_hours"] = twap_lookback_hours
 
     mm_config = MarketMakingConfig(**mm_kwargs)
 

@@ -27,6 +27,7 @@ from core.models.risk_event import RiskEvent
 ACCOUNT = "test_run_abc"
 OTHER = "other_run_xyz"
 NOW = datetime(2026, 3, 7, 12, 0, 0, tzinfo=timezone.utc)
+API = "/api"
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +173,7 @@ def _add_risk_event(session, account_name, severity="warn"):
 
 class TestHealth:
     def test_returns_200_and_ok(self, client):
-        resp = client.get("/health")
+        resp = client.get(f"{API}/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
@@ -184,7 +185,7 @@ class TestHealth:
 
 class TestRunSummary:
     def test_returns_200_with_zero_data(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/summary")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/summary")
         assert resp.status_code == 200
         body = resp.json()
         assert body["account_name"] == ACCOUNT
@@ -202,7 +203,7 @@ class TestRunSummary:
         _add_risk_event(db_session, ACCOUNT)
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/summary")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/summary")
         assert resp.status_code == 200
         body = resp.json()
         assert body["account_name"] == ACCOUNT
@@ -215,7 +216,7 @@ class TestRunSummary:
         assert Decimal(body["net_pnl"]) == Decimal("57")  # 50 + 10 - 3
 
     def test_decimal_fields_are_strings(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/summary")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/summary")
         body = resp.json()
         assert isinstance(body["realized_pnl"], str)
         assert isinstance(body["net_pnl"], str)
@@ -225,7 +226,7 @@ class TestRunSummary:
         _add_fill_chain(db_session, OTHER)
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/summary")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/summary")
         body = resp.json()
         assert body["total_fills"] == 0
         assert body["realized_pnl"] == "0"
@@ -238,7 +239,7 @@ class TestRunSummary:
 
 class TestPositions:
     def test_returns_200_with_empty_list(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/positions")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/positions")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -246,7 +247,7 @@ class TestPositions:
         _add_position(db_session, ACCOUNT, "BTC", Decimal("2"), avg_entry_price=Decimal("48000"))
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/positions")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/positions")
         assert resp.status_code == 200
         body = resp.json()
         assert len(body) == 1
@@ -259,21 +260,21 @@ class TestPositions:
         _add_position(db_session, ACCOUNT, "ETH", Decimal("0"))
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/positions")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/positions")
         assert resp.json() == []
 
     def test_excludes_other_account(self, client, db_session):
         _add_position(db_session, OTHER, "BTC", Decimal("5"))
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/positions")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/positions")
         assert resp.json() == []
 
     def test_quantity_is_string(self, client, db_session):
         _add_position(db_session, ACCOUNT, "BTC", Decimal("1"))
         db_session.commit()
 
-        body = client.get(f"/runs/{ACCOUNT}/positions").json()
+        body = client.get(f"{API}/runs/{ACCOUNT}/positions").json()
         assert isinstance(body[0]["quantity"], str)
         assert isinstance(body[0]["avg_entry_price"], str)
 
@@ -285,7 +286,7 @@ class TestPositions:
 
 class TestPnL:
     def test_returns_200_with_zero_data(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/pnl")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/pnl")
         assert resp.status_code == 200
         body = resp.json()
         assert body["total_realized_pnl"] == "0"
@@ -299,7 +300,7 @@ class TestPnL:
         _add_funding(db_session, ACCOUNT, Decimal("-8"))
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/pnl")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/pnl")
         body = resp.json()
         assert Decimal(body["total_realized_pnl"]) == Decimal("150")
         assert Decimal(body["total_unrealized_pnl"]) == Decimal("25")
@@ -310,12 +311,12 @@ class TestPnL:
         _add_pnl(db_session, OTHER, Decimal("999"), Decimal("0"))
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/pnl")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/pnl")
         body = resp.json()
         assert body["total_realized_pnl"] == "0"
 
     def test_decimal_fields_are_strings(self, client):
-        body = client.get(f"/runs/{ACCOUNT}/pnl").json()
+        body = client.get(f"{API}/runs/{ACCOUNT}/pnl").json()
         assert isinstance(body["total_realized_pnl"], str)
         assert isinstance(body["net_pnl"], str)
 
@@ -327,7 +328,7 @@ class TestPnL:
 
 class TestFills:
     def test_returns_200_with_empty_list(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/fills")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/fills")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -335,7 +336,7 @@ class TestFills:
         _add_fill_chain(db_session, ACCOUNT, fill_price=Decimal("50000"), fee=Decimal("1.5"))
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/fills")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/fills")
         body = resp.json()
         assert len(body) == 1
         assert body[0]["symbol"] == "BTC"
@@ -347,7 +348,7 @@ class TestFills:
         _add_fill_chain(db_session, OTHER)
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/fills")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/fills")
         assert resp.json() == []
 
     def test_respects_limit_param(self, client, db_session):
@@ -355,19 +356,19 @@ class TestFills:
             _add_fill_chain(db_session, ACCOUNT)
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/fills?limit=3")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/fills?limit=3")
         assert resp.status_code == 200
         assert len(resp.json()) == 3
 
     def test_limit_max_is_500(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/fills?limit=501")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/fills?limit=501")
         assert resp.status_code == 422
 
     def test_fill_price_is_string(self, client, db_session):
         _add_fill_chain(db_session, ACCOUNT)
         db_session.commit()
 
-        body = client.get(f"/runs/{ACCOUNT}/fills").json()
+        body = client.get(f"{API}/runs/{ACCOUNT}/fills").json()
         assert isinstance(body[0]["fill_price"], str)
         assert isinstance(body[0]["fill_qty"], str)
         assert isinstance(body[0]["fee_amount"], str)
@@ -380,7 +381,7 @@ class TestFills:
 
 class TestRiskEvents:
     def test_returns_200_with_empty_list(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/risk-events")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/risk-events")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -388,7 +389,7 @@ class TestRiskEvents:
         _add_risk_event(db_session, ACCOUNT, severity="critical")
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/risk-events")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/risk-events")
         body = resp.json()
         assert len(body) == 1
         assert body[0]["rule_name"] == "max_notional"
@@ -401,7 +402,7 @@ class TestRiskEvents:
         _add_risk_event(db_session, OTHER)
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/risk-events")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/risk-events")
         assert resp.json() == []
 
     def test_respects_limit_param(self, client, db_session):
@@ -409,10 +410,10 @@ class TestRiskEvents:
             _add_risk_event(db_session, ACCOUNT)
         db_session.commit()
 
-        resp = client.get(f"/runs/{ACCOUNT}/risk-events?limit=4")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/risk-events?limit=4")
         assert resp.status_code == 200
         assert len(resp.json()) == 4
 
     def test_limit_max_is_200(self, client):
-        resp = client.get(f"/runs/{ACCOUNT}/risk-events?limit=201")
+        resp = client.get(f"{API}/runs/{ACCOUNT}/risk-events?limit=201")
         assert resp.status_code == 422

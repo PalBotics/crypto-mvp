@@ -8,9 +8,11 @@ import {
   Tooltip,
   CartesianGrid,
   ReferenceLine,
+  Legend,
 } from 'recharts'
 
 import useMarketRange from '../../hooks/useMarketRange'
+import useQuoteHistory from '../../hooks/useQuoteHistory'
 import LoadingState, { ErrorState } from '../common/Loading'
 import { formatUSD } from '../../utils/format'
 
@@ -49,6 +51,7 @@ function yDomain(values) {
 export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) {
   const [hours, setHours] = useState(2)
   const marketRange = useMarketRange(hours)
+  const quoteHistory = useQuoteHistory(hours)
 
   const chartData = useMemo(() => {
     const snapshots = marketRange.data?.snapshots ?? []
@@ -73,6 +76,24 @@ export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) 
 
   const buyLine = toPrice(buyQuote?.limit_price)
   const sellLine = toPrice(sellQuote?.limit_price)
+
+  const quoteHistoryData = useMemo(() => {
+    return (quoteHistory.data ?? [])
+      .map((item) => ({
+        ts: item.ts,
+        time: timeLabel(item.ts),
+        mid: toPrice(item.mid_price),
+        twap: toPrice(item.twap),
+        bid: toPrice(item.bid_quote),
+        ask: toPrice(item.ask_quote),
+      }))
+      .filter((item) => item.mid !== null && item.twap !== null)
+  }, [quoteHistory.data])
+
+  const quoteDomain = useMemo(() => {
+    const values = quoteHistoryData.flatMap((item) => [item.mid, item.twap, item.bid, item.ask]).filter((v) => v !== null)
+    return yDomain(values)
+  }, [quoteHistoryData])
 
   return (
     <div className="card p-3 flex flex-col gap-3">
@@ -164,6 +185,53 @@ export default function MarketRangePanel({ buyQuote = null, sellQuote = null }) 
                 </LineChart>
               </ResponsiveContainer>
             )}
+          </div>
+
+          <div className="pt-1">
+            <div className="label mb-2">Price vs TWAP & Quotes</div>
+            <div className="h-64">
+              {quoteHistory.loading && quoteHistoryData.length === 0 ? (
+                <LoadingState rows={4} height="100%" />
+              ) : quoteHistory.error && quoteHistoryData.length === 0 ? (
+                <ErrorState message={quoteHistory.error} onRetry={quoteHistory.refetch} height="100%" />
+              ) : quoteHistoryData.length === 0 ? (
+                <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No quote history in selected range</div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={quoteHistoryData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#222632" />
+                    <XAxis
+                      dataKey="time"
+                      tick={{ fill: '#555a6a', fontSize: 10 }}
+                      tickLine={false}
+                      axisLine={false}
+                      interval="preserveStartEnd"
+                    />
+                    <YAxis
+                      tick={{ fill: '#555a6a', fontSize: 10 }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={78}
+                      tickFormatter={(value) => `$${Number(value).toLocaleString()}`}
+                      domain={quoteDomain}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: '#181b24', border: '1px solid #222632', borderRadius: '2px', fontSize: '11px' }}
+                      labelFormatter={(_, payload) => payload?.[0]?.payload?.ts ? new Date(payload[0].payload.ts).toLocaleString() : '—'}
+                      formatter={(value, name) => [
+                        `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                        name,
+                      ]}
+                    />
+                    <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
+                    <Line dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
+                    <Line dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
+                    <Line dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="6 4" dot={false} name="Bid" connectNulls />
+                    <Line dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="6 4" dot={false} name="Ask" connectNulls />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
           </div>
         </>
       )}

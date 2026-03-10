@@ -7,6 +7,7 @@ from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
+from core.models.quote_snapshot import QuoteSnapshot
 from core.models.risk_event import RiskEvent
 from core.models.strategy_signal import StrategySignal
 from core.models.system_event import SystemEvent
@@ -21,6 +22,7 @@ __all__ = [
     "OrderRecord",
     "PnLSnapshot",
     "PositionSnapshot",
+    "QuoteSnapshot",
     "RiskEvent",
     "StrategySignal",
     "SystemEvent",

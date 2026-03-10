@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from core.db.session import SessionLocal
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
+from core.models.quote_snapshot import QuoteSnapshot
 from core.reporting.queries import (
     get_recent_funding_rates,
     get_open_positions,
@@ -246,5 +247,51 @@ def market_range(
             }
             for snap in snapshots
         ],
+        "last_updated": datetime.now(timezone.utc),
+    }
+
+
+@router.get("/quote-history")
+def quote_history(
+    session: SessionDep,
+    hours: Annotated[int, Query()] = 8,
+) -> dict:
+    allowed_hours = {1, 2, 4, 8, 24}
+    if hours not in allowed_hours:
+        raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+    snapshots = session.execute(
+        select(QuoteSnapshot)
+        .where(
+            QuoteSnapshot.exchange == "kraken",
+            QuoteSnapshot.symbol == "XBTUSD",
+            QuoteSnapshot.account_name == "paper_mm",
+            QuoteSnapshot.snapshot_ts > cutoff,
+        )
+        .order_by(QuoteSnapshot.snapshot_ts.asc())
+    ).scalars().all()
+
+    payload: list[dict] = []
+    for snap in snapshots:
+        twap_vs_mid_bps: str | None = None
+        if snap.twap != Decimal("0"):
+            delta_bps = ((snap.mid_price - snap.twap) / snap.twap) * Decimal("10000")
+            twap_vs_mid_bps = str(_round_decimal(delta_bps, BPS_QUANT))
+
+        payload.append(
+            {
+                "ts": snap.snapshot_ts,
+                "twap": str(snap.twap),
+                "mid_price": str(snap.mid_price),
+                "bid_quote": None if snap.bid_quote is None else str(snap.bid_quote),
+                "ask_quote": None if snap.ask_quote is None else str(snap.ask_quote),
+                "twap_vs_mid_bps": twap_vs_mid_bps,
+            }
+        )
+
+    return {
+        "hours": int(hours),
+        "snapshots": payload,
         "last_updated": datetime.now(timezone.utc),
     }
