@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
@@ -233,3 +233,64 @@ def test_twap_insufficient_data_falls_back_to_current_mid() -> None:
     assert strategy.last_quote_context is not None
     assert strategy.last_quote_context.snapshot_count == 1
     assert strategy.last_quote_context.twap == book.mid_price
+
+
+def test_pct_sizing_applied_when_account_value_provided() -> None:
+    config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        quote_size_pct=Decimal("10"),
+        max_inventory_pct=Decimal("50"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+
+    with patch("core.strategy.market_making._log.info") as info_log:
+        intents = strategy.evaluate(
+            session=_session_with_twap(),
+            order_book=book,
+            current_position=Decimal("0.001"),
+            current_ts=datetime.now(timezone.utc),
+            account_value=Decimal("1200"),
+        )
+
+    buy = next(i for i in intents if i.side == "buy")
+    assert buy.quantity == Decimal("0.00200000")
+    assert any(
+        call.args and call.args[0] == "pct_sizing_applied"
+        for call in info_log.call_args_list
+    )
+
+
+def test_pct_sizing_falls_back_to_fixed_when_account_value_missing() -> None:
+    config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        quote_size_pct=Decimal("10"),
+        max_inventory_pct=Decimal("50"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    strategy = MarketMakingStrategy(config)
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(),
+        order_book=_order_book(),
+        current_position=Decimal("0.02"),
+        current_ts=datetime.now(timezone.utc),
+        account_value=None,
+    )
+
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+    assert intents[0].quantity == Decimal("0.001")

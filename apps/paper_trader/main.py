@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
@@ -22,6 +22,7 @@ from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
 from core.risk.engine import RiskEngine
+from core.reporting.account import compute_paper_account_snapshot
 from core.strategy.funding_capture import FundingCaptureStrategy
 from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
 from core.utils.logging import get_logger
@@ -29,6 +30,19 @@ from core.utils.logging import get_logger
 _log = get_logger(__name__)
 TWAP_OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "data" / "twap_lookback_override.json"
 ALLOWED_TWAP_HOURS = {1, 2, 4, 8, 24}
+
+
+def _optional_decimal_env(name: str) -> Decimal | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    try:
+        return Decimal(value)
+    except (InvalidOperation, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -354,11 +368,18 @@ class PaperTradingLoop:
             symbol=strategy.config.symbol,
             account_name=self._market_making_config.account_name,
         )
+        account_snapshot = compute_paper_account_snapshot(
+            session=self._session,
+            account_name=self._market_making_config.account_name,
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+        )
         intents = strategy.evaluate(
             self._session,
             snapshot,
             current_position,
             current_ts,
+            account_value=account_snapshot.account_value,
         )
 
         for intent in intents:
@@ -457,8 +478,10 @@ def main() -> None:
     spread_bps = Decimal(_spread) if _spread is not None else None
     _quote = os.environ.get("MM_QUOTE_SIZE")
     quote_size = Decimal(_quote) if _quote is not None else None
+    quote_size_pct = _optional_decimal_env("MM_QUOTE_SIZE_PCT")
     _inventory = os.environ.get("MM_MAX_INVENTORY")
     max_inventory = Decimal(_inventory) if _inventory is not None else None
+    max_inventory_pct = _optional_decimal_env("MM_MAX_INVENTORY_PCT")
     _min_spread = os.environ.get("MM_MIN_SPREAD_BPS")
     min_spread_bps = Decimal(_min_spread) if _min_spread is not None else None
     _twap = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
@@ -471,8 +494,12 @@ def main() -> None:
         mm_kwargs["spread_bps"] = spread_bps
     if quote_size is not None:
         mm_kwargs["quote_size"] = quote_size
+    if quote_size_pct is not None:
+        mm_kwargs["quote_size_pct"] = quote_size_pct
     if max_inventory is not None:
         mm_kwargs["max_inventory"] = max_inventory
+    if max_inventory_pct is not None:
+        mm_kwargs["max_inventory_pct"] = max_inventory_pct
     if min_spread_bps is not None:
         mm_kwargs["min_spread_bps"] = min_spread_bps
     if stale_book_seconds is not None:

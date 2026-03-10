@@ -34,6 +34,7 @@ from core.reporting.queries import (
     get_risk_events,
     get_run_summary,
 )
+from core.reporting.account import compute_paper_account_snapshot
 
 from apps.dashboard.schemas import (
     FillSchema,
@@ -261,6 +262,17 @@ def quotes(session: SessionDep) -> dict:
         "quotes": quote_items,
         "last_updated": datetime.now(timezone.utc),
     }
+
+
+@router.get("/account")
+def account(session: SessionDep) -> dict:
+    snapshot = compute_paper_account_snapshot(
+        session=session,
+        account_name="paper_mm",
+        exchange="kraken",
+        symbol="XBTUSD",
+    )
+    return snapshot.to_api_dict()
 
 
 @router.get("/market-range")
