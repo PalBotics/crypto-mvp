@@ -6,11 +6,15 @@ Session is injected via FastAPI dependency injection.
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 from typing import Annotated, Generator
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -46,10 +50,38 @@ router = APIRouter()
 
 USD_QUANT = Decimal("0.01")
 BPS_QUANT = Decimal("0.0001")
+ALLOWED_HOURS = {1, 2, 4, 8, 24}
+TWAP_OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "data" / "twap_lookback_override.json"
 
 
 def _round_decimal(value: Decimal, quant: Decimal) -> Decimal:
     return value.quantize(quant, rounding=ROUND_HALF_UP)
+
+
+class TwapLookbackRequest(BaseModel):
+    hours: int
+
+
+def _resolve_twap_lookback_hours() -> int:
+    if TWAP_OVERRIDE_PATH.exists():
+        try:
+            payload = json.loads(TWAP_OVERRIDE_PATH.read_text(encoding="utf-8"))
+            hours = int(payload.get("hours"))
+            if hours in ALLOWED_HOURS:
+                return hours
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+    env_raw = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
+    if env_raw is not None:
+        try:
+            env_hours = int(env_raw)
+            if env_hours in ALLOWED_HOURS:
+                return env_hours
+        except ValueError:
+            pass
+
+    return 2
 
 
 def get_session() -> Generator[Session, None, None]:
@@ -61,8 +93,40 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 
 @router.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
+def health(session: SessionDep) -> dict:
+    latest_snapshot_ts = session.execute(
+        select(func.max(OrderBookSnapshot.event_ts)).where(
+            OrderBookSnapshot.exchange == "kraken",
+            OrderBookSnapshot.symbol == "XBTUSD",
+        )
+    ).scalar_one_or_none()
+
+    age_seconds: int | None = None
+    if latest_snapshot_ts is not None:
+        age_seconds = max(0, int((datetime.now(timezone.utc) - latest_snapshot_ts).total_seconds()))
+
+    return {
+        "status": "ok",
+        "last_snapshot_age_seconds": age_seconds,
+        "last_snapshot_ts": latest_snapshot_ts,
+    }
+
+
+@router.get("/twap-lookback")
+def twap_lookback_get() -> dict:
+    return {"hours": _resolve_twap_lookback_hours()}
+
+
+@router.post("/twap-lookback")
+def twap_lookback_set(payload: TwapLookbackRequest) -> dict:
+    hours = int(payload.hours)
+    if hours not in ALLOWED_HOURS:
+        raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
+
+    TWAP_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TWAP_OVERRIDE_PATH.write_text(json.dumps({"hours": hours}), encoding="utf-8")
+
+    return {"hours": hours, "status": "ok"}
 
 
 @router.get("/runs/{account_name}/summary", response_model=RunSummarySchema)
@@ -204,8 +268,7 @@ def market_range(
     session: SessionDep,
     hours: Annotated[int, Query()] = 2,
 ) -> dict:
-    allowed_hours = {1, 2, 4, 8, 24}
-    if hours not in allowed_hours:
+    if hours not in ALLOWED_HOURS:
         raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
@@ -258,8 +321,7 @@ def quote_history(
     session: SessionDep,
     hours: Annotated[int, Query()] = 8,
 ) -> dict:
-    allowed_hours = {1, 2, 4, 8, 24}
-    if hours not in allowed_hours:
+    if hours not in ALLOWED_HOURS:
         raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))

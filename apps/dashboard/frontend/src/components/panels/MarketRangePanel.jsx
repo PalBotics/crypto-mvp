@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ResponsiveContainer,
   LineChart,
@@ -58,8 +58,54 @@ function twapDriftColor(driftBps) {
 
 export default function MarketRangePanel() {
   const [hours, setHours] = useState(2)
+  const [twapWindow, setTwapWindow] = useState(2)
+  const [twapSaveError, setTwapSaveError] = useState('')
   const marketRange = useMarketRange(hours)
   const quoteHistory = useQuoteHistory(hours)
+
+  useEffect(() => {
+    let mounted = true
+
+    async function loadTwapLookback() {
+      try {
+        const resp = await fetch('/api/twap-lookback')
+        if (!resp.ok) {
+          throw new Error('failed')
+        }
+        const payload = await resp.json()
+        if (mounted && payload?.hours) {
+          setTwapWindow(payload.hours)
+        }
+      } catch {
+        if (mounted) {
+          setTwapSaveError('failed')
+        }
+      }
+    }
+
+    void loadTwapLookback()
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  async function updateTwapWindow(nextHours) {
+    setTwapSaveError('')
+    setTwapWindow(nextHours)
+    try {
+      const resp = await fetch('/api/twap-lookback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hours: nextHours }),
+      })
+
+      if (!resp.ok) {
+        throw new Error('failed')
+      }
+    } catch {
+      setTwapSaveError('failed')
+    }
+  }
 
   const marketRangeData = useMemo(() => {
     return (marketRange.data?.snapshots ?? [])
@@ -169,13 +215,36 @@ export default function MarketRangePanel() {
 
       {marketRange.data && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 xl:grid-cols-7 gap-2">
             <MetricCard label="Low" value={`$${formatUSD(marketRange.data.low)}`} color="green" size="sm" />
             <MetricCard label="High" value={`$${formatUSD(marketRange.data.high)}`} color="red" size="sm" />
             <MetricCard label="Range $" value={`$${formatUSD(marketRange.data.range_usd)}`} size="sm" />
             <MetricCard label="Range bps" value={formatUSD(marketRange.data.range_bps)} size="sm" />
             <MetricCard label="Current Mid" value={`$${formatUSD(marketRange.data.current_mid)}`} color="blue" size="sm" />
             <MetricCard label="TWAP Drift" value={twapDriftText} color={twapDriftBps === null ? 'default' : twapDriftColor(twapDriftBps)} size="sm" />
+            <div className="card p-3 flex flex-col gap-1">
+              <span className="label">TWAP Window</span>
+              <div className="flex flex-wrap gap-1">
+                {HOUR_OPTIONS.map((option) => {
+                  const active = option === twapWindow
+                  return (
+                    <button
+                      key={`twap-${option}`}
+                      type="button"
+                      onClick={() => { void updateTwapWindow(option) }}
+                      className={`px-2 py-1 rounded-sm text-[10px] font-mono border transition-colors duration-150 ${
+                        active
+                          ? 'border-blue/45 text-blue bg-blue/15'
+                          : 'border-border text-text-secondary hover:text-text-primary hover:border-blue/30'
+                      }`}
+                    >
+                      {option}H
+                    </button>
+                  )
+                })}
+              </div>
+              {twapSaveError && <span className="text-[10px] font-mono text-red">failed</span>}
+            </div>
           </div>
 
           <div className="h-64">

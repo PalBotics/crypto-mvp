@@ -175,7 +175,10 @@ class TestHealth:
     def test_returns_200_and_ok(self, client):
         resp = client.get(f"{API}/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert "last_snapshot_age_seconds" in body
+        assert "last_snapshot_ts" in body
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,30 @@ import StatusDot from '../components/common/StatusDot'
 import LoadingState, { ErrorState } from '../components/common/Loading'
 import { toLocalTime } from '../utils/format'
 
+function formatSnapshotAge(seconds) {
+  if (seconds === null || seconds === undefined) {
+    return '—'
+  }
+
+  const total = Math.max(0, Math.floor(seconds))
+  const minutes = Math.floor(total / 60)
+  const secs = total % 60
+
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60)
+    return `${hours}h ${minutes % 60}m ago`
+  }
+
+  return `${minutes}m ${secs}s ago`
+}
+
+function snapshotAgeClass(seconds) {
+  if (seconds === null || seconds === undefined) return 'text-text-dim'
+  if (seconds <= 90) return 'text-green'
+  if (seconds <= 180) return 'text-yellow'
+  return 'text-red'
+}
+
 export default function Health() {
   const health = useHealth()
   const summary = useRunSummary()
@@ -22,6 +46,13 @@ export default function Health() {
           <div className="flex justify-between items-center">
             <span className="label">Last response</span>
             <span className="font-mono text-xs text-text-secondary">{toLocalTime(health.lastUpdated)}</span>
+          </div>
+
+          <div className="flex justify-between items-center">
+            <span className="label">Collector Snapshot Age</span>
+            <span className={`font-mono text-xs ${snapshotAgeClass(health.data?.last_snapshot_age_seconds)}`}>
+              {formatSnapshotAge(health.data?.last_snapshot_age_seconds)}
+            </span>
           </div>
         </div>
 
