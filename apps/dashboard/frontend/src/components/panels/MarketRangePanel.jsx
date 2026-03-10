@@ -8,6 +8,7 @@ import {
   Tooltip,
   CartesianGrid,
   Legend,
+  ReferenceLine,
 } from 'recharts'
 
 import useMarketRange from '../../hooks/useMarketRange'
@@ -54,6 +55,19 @@ function twapDriftColor(driftBps) {
   if (abs <= 20) return 'green'
   if (abs <= 60) return 'yellow'
   return 'red'
+}
+
+function OrderEventLabel({ viewBox, marker, tooltip }) {
+  const x = viewBox?.x ?? 0
+  const y = (viewBox?.y ?? 0) + 10
+  return (
+    <g>
+      <title>{tooltip}</title>
+      <text x={x} y={y} fill={marker.color} fontSize={10} fontWeight={600} textAnchor="middle">
+        {marker.text}
+      </text>
+    </g>
+  )
 }
 
 export default function MarketRangePanel() {
@@ -170,6 +184,56 @@ export default function MarketRangePanel() {
     })
   }, [marketRangeData, quoteHistoryData])
 
+  const mappedOrderEvents = useMemo(() => {
+    if (mergedChartData.length === 0) {
+      return []
+    }
+
+    return (quoteHistory.orderEvents ?? [])
+      .map((event) => {
+        const eventMs = Date.parse(event.ts)
+        if (Number.isNaN(eventMs)) {
+          return null
+        }
+
+        let closestTs = null
+        let minDiff = Number.POSITIVE_INFINITY
+
+        for (const point of mergedChartData) {
+          const pointMs = Date.parse(point.ts)
+          if (Number.isNaN(pointMs)) {
+            continue
+          }
+          const diff = Math.abs(pointMs - eventMs)
+          if (diff < minDiff) {
+            minDiff = diff
+            closestTs = point.ts
+          }
+        }
+
+        if (!closestTs) {
+          return null
+        }
+
+        const side = String(event.side || '').toLowerCase()
+        const status = String(event.status || '').toLowerCase()
+        const marker = side === 'sell'
+          ? { text: 'S', color: '#f97316' }
+          : { text: 'B', color: '#3b82f6' }
+
+        return {
+          ...event,
+          side,
+          status,
+          x: closestTs,
+          marker,
+          dash: status === 'filled' ? '0' : '3 3',
+          tooltip: `${side.toUpperCase()} | $${event.price ?? '-'} | ${status} | qty ${event.qty ?? '-'}`,
+        }
+      })
+      .filter(Boolean)
+  }, [quoteHistory.orderEvents, mergedChartData])
+
   const quoteDomain = useMemo(() => {
     const values = mergedChartData
       .flatMap((item) => [item.mid, item.twap, item.bid, item.ask])
@@ -260,7 +324,8 @@ export default function MarketRangePanel() {
                 <LineChart data={mergedChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#222632" />
                   <XAxis
-                    dataKey="time"
+                    dataKey="ts"
+                    tickFormatter={timeLabel}
                     tick={{ fill: '#555a6a', fontSize: 10 }}
                     tickLine={false}
                     axisLine={false}
@@ -283,6 +348,23 @@ export default function MarketRangePanel() {
                     ]}
                   />
                   <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
+                  {mappedOrderEvents.map((event, idx) => (
+                    <ReferenceLine
+                      key={`${event.ts}-${event.side}-${idx}`}
+                      x={event.x}
+                      stroke={event.marker.color}
+                      strokeWidth={1}
+                      strokeOpacity={0.6}
+                      strokeDasharray={event.dash}
+                      label={(props) => (
+                        <OrderEventLabel
+                          {...props}
+                          marker={event.marker}
+                          tooltip={event.tooltip}
+                        />
+                      )}
+                    />
+                  ))}
                   <Line dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
                   <Line dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
                   <Line dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls />

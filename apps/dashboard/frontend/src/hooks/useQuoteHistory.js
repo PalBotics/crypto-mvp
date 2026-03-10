@@ -8,6 +8,7 @@ export default function useQuoteHistory(hours = 8) {
 
   return {
     data: data?.snapshots ?? [],
+    orderEvents: data?.order_events ?? [],
     apiLastUpdated: data?.last_updated ?? null,
     loading,
     error,

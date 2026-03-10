@@ -354,9 +354,58 @@ def quote_history(
             }
         )
 
+    fill_counts = (
+        select(
+            OrderRecord.order_intent_id.label("order_intent_id"),
+            func.count(FillRecord.id).label("fill_count"),
+        )
+        .join(FillRecord, FillRecord.order_record_id == OrderRecord.id)
+        .group_by(OrderRecord.order_intent_id)
+        .subquery()
+    )
+
+    intent_rows = session.execute(
+        select(
+            OrderIntent.created_ts,
+            OrderIntent.side,
+            OrderIntent.limit_price,
+            OrderIntent.quantity,
+            OrderIntent.status,
+            fill_counts.c.fill_count,
+        )
+        .outerjoin(fill_counts, fill_counts.c.order_intent_id == OrderIntent.id)
+        .where(
+            OrderIntent.mode == "paper_mm",
+            OrderIntent.created_ts > cutoff,
+        )
+        .order_by(OrderIntent.created_ts.asc())
+    ).all()
+
+    order_events: list[dict] = []
+    for row in intent_rows:
+        fill_count = int(row.fill_count or 0)
+        status = "filled" if fill_count > 0 else str(row.status).lower()
+        side = str(row.side).lower()
+
+        ts = row.created_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts_value = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        order_events.append(
+            {
+                "ts": ts_value,
+                "side": side,
+                "price": None if row.limit_price is None else str(row.limit_price),
+                "status": status,
+                "qty": str(row.quantity),
+            }
+        )
+
     return {
         "hours": int(hours),
         "snapshots": payload,
+        "order_events": order_events,
         "last_updated": datetime.now(timezone.utc),
     }
 
