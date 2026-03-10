@@ -24,6 +24,7 @@ class MarketMakingConfig:
     max_inventory: Decimal = Decimal("0.01")
     quote_size_pct: Decimal | None = None
     max_inventory_pct: Decimal | None = None
+    min_profit_bps: Decimal = Decimal("10")
     min_spread_bps: Decimal = Decimal("0.01")
     stale_book_seconds: int = 120
     twap_lookback_hours: int = 2

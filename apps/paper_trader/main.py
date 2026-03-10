@@ -482,6 +482,7 @@ def main() -> None:
     _inventory = os.environ.get("MM_MAX_INVENTORY")
     max_inventory = Decimal(_inventory) if _inventory is not None else None
     max_inventory_pct = _optional_decimal_env("MM_MAX_INVENTORY_PCT")
+    min_profit_bps = _optional_decimal_env("MM_MIN_PROFIT_BPS")
     _min_spread = os.environ.get("MM_MIN_SPREAD_BPS")
     min_spread_bps = Decimal(_min_spread) if _min_spread is not None else None
     _twap = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
@@ -500,6 +501,8 @@ def main() -> None:
         mm_kwargs["max_inventory"] = max_inventory
     if max_inventory_pct is not None:
         mm_kwargs["max_inventory_pct"] = max_inventory_pct
+    if min_profit_bps is not None:
+        mm_kwargs["min_profit_bps"] = min_profit_bps
     if min_spread_bps is not None:
         mm_kwargs["min_spread_bps"] = min_spread_bps
     if stale_book_seconds is not None:
