@@ -13,10 +13,13 @@ from core.models.order_intent import OrderIntent
 from core.models.order_record import OrderRecord
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
+from core.utils.logging import get_logger
 
 USD_QUANT = Decimal("0.01")
 BTC_QUANT = Decimal("0.00000001")
 PCT_QUANT = Decimal("0.01")
+
+_log = get_logger(__name__)
 
 
 def _to_decimal(value: object) -> Decimal:
@@ -94,7 +97,6 @@ def compute_paper_account_snapshot(
         session.execute(
             select(PositionSnapshot)
             .where(PositionSnapshot.account_name == account_name)
-            .where(PositionSnapshot.symbol == symbol)
             .order_by(PositionSnapshot.snapshot_ts.desc())
         )
         .scalars()
@@ -131,6 +133,15 @@ def compute_paper_account_snapshot(
 
     account_value = capital + realized_pnl - fees_paid + unrealized_pnl
     cash_value = account_value - btc_value_usd
+
+    _log.info(
+        "paper_account_value_components",
+        starting_capital=str(capital),
+        realized_pnl=str(realized_pnl),
+        fees_paid=str(fees_paid),
+        unrealized_pnl=str(unrealized_pnl),
+        account_value=str(account_value),
+    )
 
     pct_in_btc = Decimal("0")
     if account_value != Decimal("0"):
