@@ -13,11 +13,14 @@ import {
 
 import useMarketRange from '../../hooks/useMarketRange'
 import useQuoteHistory from '../../hooks/useQuoteHistory'
+import useSGCurve from '../../hooks/useSGCurve'
 import LoadingState, { ErrorState } from '../common/Loading'
 import { formatUSD } from '../../utils/format'
 import MetricCard from '../common/MetricCard'
 
 const HOUR_OPTIONS = [1, 2, 4, 8, 24]
+const SG_WINDOW_OPTIONS = [15, 25, 35, 51]
+const SG_DEGREE_OPTIONS = [2, 3, 4]
 const MATCH_WINDOW_MS = 90 * 1000
 
 function toPrice(value) {
@@ -73,9 +76,12 @@ function OrderEventLabel({ viewBox, marker, tooltip }) {
 export default function MarketRangePanel() {
   const [hours, setHours] = useState(2)
   const [twapWindow, setTwapWindow] = useState(2)
+  const [sgWindow, setSgWindow] = useState(25)
+  const [sgDegree, setSgDegree] = useState(2)
   const [twapSaveError, setTwapSaveError] = useState('')
   const marketRange = useMarketRange(hours)
   const quoteHistory = useQuoteHistory(hours)
+  const sgCurve = useSGCurve(hours, sgWindow, sgDegree)
 
   useEffect(() => {
     let mounted = true
@@ -150,6 +156,13 @@ export default function MarketRangePanel() {
       .filter((item) => item.mid !== null && item.twap !== null)
   }, [quoteHistory.data])
 
+  const sgCurveData = useMemo(() => {
+    return (sgCurve.data ?? []).map((item) => ({
+      ts: item.ts,
+      sg: toPrice(item.sg),
+    }))
+  }, [sgCurve.data])
+
   const mergedChartData = useMemo(() => {
     if (marketRangeData.length === 0) {
       return []
@@ -157,8 +170,10 @@ export default function MarketRangePanel() {
 
     return marketRangeData.map((basePoint) => {
       const baseMs = Date.parse(basePoint.ts)
-      let best = null
-      let bestDiff = Number.POSITIVE_INFINITY
+      let bestQuote = null
+      let bestQuoteDiff = Number.POSITIVE_INFINITY
+      let bestSg = null
+      let bestSgDiff = Number.POSITIVE_INFINITY
 
       if (!Number.isNaN(baseMs)) {
         for (const quotePoint of quoteHistoryData) {
@@ -168,21 +183,35 @@ export default function MarketRangePanel() {
           }
 
           const diff = Math.abs(quoteMs - baseMs)
-          if (diff <= MATCH_WINDOW_MS && diff < bestDiff) {
-            best = quotePoint
-            bestDiff = diff
+          if (diff <= MATCH_WINDOW_MS && diff < bestQuoteDiff) {
+            bestQuote = quotePoint
+            bestQuoteDiff = diff
+          }
+        }
+
+        for (const sgPoint of sgCurveData) {
+          const sgMs = Date.parse(sgPoint.ts)
+          if (Number.isNaN(sgMs)) {
+            continue
+          }
+
+          const diff = Math.abs(sgMs - baseMs)
+          if (diff <= MATCH_WINDOW_MS && diff < bestSgDiff) {
+            bestSg = sgPoint
+            bestSgDiff = diff
           }
         }
       }
 
       return {
         ...basePoint,
-        twap: best?.twap,
-        bid: best?.bid,
-        ask: best?.ask,
+        twap: bestQuote?.twap,
+        bid: bestQuote?.bid,
+        ask: bestQuote?.ask,
+        sg: bestSg?.sg,
       }
     })
-  }, [marketRangeData, quoteHistoryData])
+  }, [marketRangeData, quoteHistoryData, sgCurveData])
 
   const mappedOrderEvents = useMemo(() => {
     if (mergedChartData.length === 0) {
@@ -236,7 +265,7 @@ export default function MarketRangePanel() {
 
   const quoteDomain = useMemo(() => {
     const values = mergedChartData
-      .flatMap((item) => [item.mid, item.twap, item.bid, item.ask])
+      .flatMap((item) => [item.mid, item.twap, item.bid, item.ask, item.sg])
       .filter((v) => v !== null && v !== undefined)
     return yDomain(values)
   }, [mergedChartData])
@@ -268,6 +297,48 @@ export default function MarketRangePanel() {
                 }`}
               >
                 {option}H
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="label">SG Curve</span>
+        <div className="flex items-center gap-1.5">
+          {SG_WINDOW_OPTIONS.map((option) => {
+            const active = option === sgWindow
+            return (
+              <button
+                key={`sg-window-${option}`}
+                type="button"
+                onClick={() => setSgWindow(option)}
+                className={`px-2 py-1 rounded-sm text-[10px] font-mono border transition-colors duration-150 ${
+                  active
+                    ? 'border-blue/45 text-blue bg-blue/15'
+                    : 'border-border text-text-secondary hover:text-text-primary hover:border-blue/30'
+                }`}
+              >
+                {option}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {SG_DEGREE_OPTIONS.map((option) => {
+            const active = option === sgDegree
+            return (
+              <button
+                key={`sg-degree-${option}`}
+                type="button"
+                onClick={() => setSgDegree(option)}
+                className={`px-2 py-1 rounded-sm text-[10px] font-mono border transition-colors duration-150 ${
+                  active
+                    ? 'border-blue/45 text-blue bg-blue/15'
+                    : 'border-border text-text-secondary hover:text-text-primary hover:border-blue/30'
+                }`}
+              >
+                d{option}
               </button>
             )
           })}
@@ -369,6 +440,7 @@ export default function MarketRangePanel() {
                   <Line dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
                   <Line dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls />
                   <Line dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Ask" connectNulls />
+                  <Line dataKey="sg" stroke="#22c55e" strokeWidth={2} dot={false} name="SG" />
                 </LineChart>
               </ResponsiveContainer>
             )}

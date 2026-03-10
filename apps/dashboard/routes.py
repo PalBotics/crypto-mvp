@@ -13,8 +13,10 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Annotated, Generator
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from scipy.signal import savgol_filter
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -57,6 +59,10 @@ TWAP_OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "data" / "twap_lookba
 
 def _round_decimal(value: Decimal, quant: Decimal) -> Decimal:
     return value.quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def _to_fixed_8(value: Decimal | float | int) -> str:
+    return format(Decimal(str(value)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP), "f")
 
 
 class TwapLookbackRequest(BaseModel):
@@ -324,6 +330,76 @@ def market_range(
             }
             for snap in snapshots
         ],
+        "last_updated": datetime.now(timezone.utc),
+    }
+
+
+@router.get("/sg-curve")
+def sg_curve(
+    session: SessionDep,
+    hours: Annotated[int, Query()] = 2,
+    window: Annotated[int, Query(ge=3)] = 25,
+    degree: Annotated[int, Query(ge=1)] = 2,
+) -> dict:
+    if hours not in ALLOWED_HOURS:
+        raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
+
+    effective_window = int(window)
+    if effective_window % 2 == 0:
+        effective_window += 1
+
+    if int(degree) >= effective_window:
+        raise HTTPException(status_code=422, detail="degree must be less than window")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+    snapshots = session.execute(
+        select(OrderBookSnapshot)
+        .where(
+            OrderBookSnapshot.exchange == "kraken",
+            OrderBookSnapshot.symbol == "XBTUSD",
+            OrderBookSnapshot.event_ts > cutoff,
+            OrderBookSnapshot.mid_price.is_not(None),
+        )
+        .order_by(OrderBookSnapshot.event_ts.asc())
+    ).scalars().all()
+
+    mids = np.array([float(s.mid_price) for s in snapshots], dtype=float)
+    enough_points = mids.size >= effective_window
+
+    sg_values = None
+    slope_values = None
+    concavity_values = None
+    if enough_points:
+        sg_values = savgol_filter(mids, window_length=effective_window, polyorder=int(degree), deriv=0)
+        slope_values = savgol_filter(mids, window_length=effective_window, polyorder=int(degree), deriv=1)
+        concavity_values = savgol_filter(mids, window_length=effective_window, polyorder=int(degree), deriv=2)
+
+    points: list[dict] = []
+    for idx, snap in enumerate(snapshots):
+        ts = snap.event_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts_value = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+        sg = None if sg_values is None else _to_fixed_8(sg_values[idx])
+        slope = None if slope_values is None else _to_fixed_8(slope_values[idx])
+        concavity = None if concavity_values is None else _to_fixed_8(concavity_values[idx])
+
+        points.append(
+            {
+                "ts": ts_value,
+                "mid": _to_fixed_8(snap.mid_price),
+                "sg": sg,
+                "slope": slope,
+                "concavity": concavity,
+            }
+        )
+
+    return {
+        "hours": int(hours),
+        "window": int(effective_window),
+        "degree": int(degree),
+        "points": points,
         "last_updated": datetime.now(timezone.utc),
     }
 
