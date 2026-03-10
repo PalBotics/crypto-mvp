@@ -17,6 +17,7 @@ import { formatUSD } from '../../utils/format'
 import MetricCard from '../common/MetricCard'
 
 const HOUR_OPTIONS = [1, 2, 4, 8, 24]
+const MATCH_WINDOW_MS = 90 * 1000
 
 function toPrice(value) {
   const parsed = parseFloat(value)
@@ -60,11 +61,27 @@ export default function MarketRangePanel() {
   const marketRange = useMarketRange(hours)
   const quoteHistory = useQuoteHistory(hours)
 
+  const marketRangeData = useMemo(() => {
+    return (marketRange.data?.snapshots ?? [])
+      .map((item) => {
+        const mid = toPrice(item.mid)
+        if (mid === null) {
+          return null
+        }
+
+        return {
+          ts: item.ts,
+          time: timeLabel(item.ts),
+          mid,
+        }
+      })
+      .filter(Boolean)
+  }, [marketRange.data])
+
   const quoteHistoryData = useMemo(() => {
     return (quoteHistory.data ?? [])
       .map((item) => ({
         ts: item.ts,
-        time: timeLabel(item.ts),
         mid: toPrice(item.mid_price),
         twap: toPrice(item.twap),
         bid: toPrice(item.bid_quote),
@@ -73,10 +90,46 @@ export default function MarketRangePanel() {
       .filter((item) => item.mid !== null && item.twap !== null)
   }, [quoteHistory.data])
 
+  const mergedChartData = useMemo(() => {
+    if (marketRangeData.length === 0) {
+      return []
+    }
+
+    return marketRangeData.map((basePoint) => {
+      const baseMs = Date.parse(basePoint.ts)
+      let best = null
+      let bestDiff = Number.POSITIVE_INFINITY
+
+      if (!Number.isNaN(baseMs)) {
+        for (const quotePoint of quoteHistoryData) {
+          const quoteMs = Date.parse(quotePoint.ts)
+          if (Number.isNaN(quoteMs)) {
+            continue
+          }
+
+          const diff = Math.abs(quoteMs - baseMs)
+          if (diff <= MATCH_WINDOW_MS && diff < bestDiff) {
+            best = quotePoint
+            bestDiff = diff
+          }
+        }
+      }
+
+      return {
+        ...basePoint,
+        twap: best?.twap,
+        bid: best?.bid,
+        ask: best?.ask,
+      }
+    })
+  }, [marketRangeData, quoteHistoryData])
+
   const quoteDomain = useMemo(() => {
-    const values = quoteHistoryData.flatMap((item) => [item.mid, item.twap, item.bid, item.ask]).filter((v) => v !== null)
+    const values = mergedChartData
+      .flatMap((item) => [item.mid, item.twap, item.bid, item.ask])
+      .filter((v) => v !== null && v !== undefined)
     return yDomain(values)
-  }, [quoteHistoryData])
+  }, [mergedChartData])
 
   const latestQuoteSnapshot = quoteHistoryData.length > 0 ? quoteHistoryData[quoteHistoryData.length - 1] : null
   const twapDriftBps = latestQuoteSnapshot && latestQuoteSnapshot.twap !== 0
@@ -127,15 +180,15 @@ export default function MarketRangePanel() {
 
           <div className="h-64">
             <div className="label mb-2">Price, TWAP & Quotes</div>
-            {quoteHistory.loading && quoteHistoryData.length === 0 ? (
+            {marketRange.loading && marketRangeData.length === 0 ? (
               <LoadingState rows={4} height="100%" />
-            ) : quoteHistory.error && quoteHistoryData.length === 0 ? (
-              <ErrorState message={quoteHistory.error} onRetry={quoteHistory.refetch} height="100%" />
-            ) : quoteHistoryData.length === 0 ? (
-              <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No quote history in selected range</div>
+            ) : marketRange.error && marketRangeData.length === 0 ? (
+              <ErrorState message={marketRange.error} onRetry={marketRange.refetch} height="100%" />
+            ) : mergedChartData.length === 0 ? (
+              <div className="text-text-dim font-mono text-xs h-full flex items-center justify-center">No market snapshots in selected range</div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={quoteHistoryData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <LineChart data={mergedChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#222632" />
                   <XAxis
                     dataKey="time"

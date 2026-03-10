@@ -167,6 +167,11 @@ doubles as `account_name` / `run_id`), but no replay runner exists.
 uvicorn apps.dashboard.main:app --reload
 ```
 
+Packaging note: PyWebView was the original planned desktop packaging approach,
+but it is not compatible with Python 3.14 in this project environment. The
+dashboard desktop shell is packaged with Qt WebEngine (`QWebEngineView`) via
+PySide6/PyQt6, which provides an equivalent native window experience.
+
 Available endpoints (all read-only, all return JSON):
 
 | Method | Path | Description |
