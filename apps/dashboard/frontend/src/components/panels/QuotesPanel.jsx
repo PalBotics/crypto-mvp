@@ -93,7 +93,9 @@ export default function QuotesPanel() {
   const isLive = data.length > 0
   const displayQuotes = isLive ? data : lastKnown
   const buyQuote = displayQuotes.find((q) => q.side === 'buy')
-  const sellQuote = displayQuotes.find((q) => q.side === 'sell')
+  const displaySellQuote = displayQuotes.find((q) => q.side === 'sell')
+  const sellQuote = displaySellQuote || lastKnown.find((q) => q.side === 'sell')
+  const sellIsLive = isLive && Boolean(displaySellQuote)
 
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 1000)
@@ -130,7 +132,23 @@ export default function QuotesPanel() {
             </div>
           )}
 
-          {sellQuote && <QuoteCard quote={sellQuote} isLive={isLive} />}
+          {sellQuote ? (
+            <QuoteCard quote={sellQuote} isLive={sellIsLive} />
+          ) : (
+            <div className="bg-surface border border-border rounded-sm p-3">
+              <div className="flex items-center justify-between mb-2">
+                <SideTag side="SELL" size="xs" />
+                <span className="text-text-dim text-[10px] font-mono uppercase">Awaiting first quote</span>
+              </div>
+              <div className="font-mono text-lg leading-none mb-2 text-orange">SELL - Awaiting first quote</div>
+              <div className="text-text-secondary text-xs mb-2">Awaiting first quote</div>
+              <div className="w-full h-2 bg-muted rounded-sm overflow-hidden mb-2" />
+              <div className="flex justify-between items-center">
+                <span className="text-text-dim text-[10px] font-mono">0% proximity</span>
+                <span className="text-[10px] font-mono text-text-dim">Quote Age: -</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
