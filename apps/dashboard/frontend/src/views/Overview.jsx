@@ -20,11 +20,11 @@ export default function Overview() {
         <PnLSummary />
       </div>
 
+      <MarketRangePanel />
+
       <RecentFills />
 
       <FillDroughtPanel />
-
-      <MarketRangePanel />
     </div>
   )
 }

@@ -7,7 +7,6 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
-  Legend,
   ReferenceLine,
   ReferenceArea,
 } from 'recharts'
@@ -92,6 +91,15 @@ export default function MarketRangePanel() {
   const [twapWindow, setTwapWindow] = useState(2)
   const [sgWindow, setSgWindow] = useState(25)
   const [sgDegree, setSgDegree] = useState(2)
+  const [visible, setVisible] = useState({
+    ask: true,
+    bid: true,
+    concavity: false,
+    mid: true,
+    sg: true,
+    slope: false,
+    twap: true,
+  })
   const [twapSaveError, setTwapSaveError] = useState('')
   const marketRange = useMarketRange(hours)
   const quoteHistory = useQuoteHistory(hours)
@@ -140,6 +148,8 @@ export default function MarketRangePanel() {
       setTwapSaveError('failed')
     }
   }
+
+  const toggleLine = (key) => setVisible((v) => ({ ...v, [key]: !v[key] }))
 
   const marketRangeData = useMemo(() => {
     return (marketRange.data?.snapshots ?? [])
@@ -414,6 +424,71 @@ export default function MarketRangePanel() {
 
           <div className="h-64">
             <div className="label mb-2">Price, TWAP & Quotes</div>
+            <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px] font-mono text-text-secondary">
+              <button
+                type="button"
+                onClick={() => toggleLine('ask')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.ask ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#f97316' }} />
+                <span>Ask</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLine('bid')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.bid ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#3b82f6' }} />
+                <span>Bid</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLine('concavity')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.concavity ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#06b6d4' }} />
+                <span>Concavity</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLine('mid')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.mid ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#818cf8' }} />
+                <span>Mid</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLine('sg')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.sg ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#22c55e' }} />
+                <span>SG</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLine('slope')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.slope ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#f59e0b' }} />
+                <span>Slope</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleLine('twap')}
+                className="inline-flex items-center gap-1.5 cursor-pointer"
+                style={{ opacity: visible.twap ? 1 : 0.35 }}
+              >
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: '#eab308' }} />
+                <span>TWAP</span>
+              </button>
+            </div>
             {marketRange.loading && marketRangeData.length === 0 ? (
               <LoadingState rows={4} height="100%" />
             ) : marketRange.error && marketRangeData.length === 0 ? (
@@ -465,7 +540,6 @@ export default function MarketRangePanel() {
                       ]
                     }}
                   />
-                  <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
                   <ReferenceArea yAxisId="signal" y1={-2} y2={2} fill="green" fillOpacity={0.05} label={{ value: 'Near zero', fill: '#555a6a', fontSize: 9 }} />
                   <ReferenceArea yAxisId="signal" y1={0} y2={0.5} fill="cyan" fillOpacity={0.03} />
                   {mappedOrderEvents.map((event, idx) => (
@@ -486,13 +560,13 @@ export default function MarketRangePanel() {
                       )}
                     />
                   ))}
-                  <Line yAxisId="price" dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" />
-                  <Line yAxisId="price" dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" />
-                  <Line yAxisId="price" dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls />
-                  <Line yAxisId="price" dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Ask" connectNulls />
-                  <Line yAxisId="price" dataKey="sg" stroke="#22c55e" strokeWidth={2} dot={false} name="SG" />
-                  <Line yAxisId="signal" dataKey="slope" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Slope" />
-                  <Line yAxisId="signal" dataKey="concavity" stroke="#06b6d4" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Concavity" />
+                  <Line yAxisId="price" dataKey="mid" stroke="#6366f1" strokeWidth={1.8} dot={false} name="Mid" hide={!visible.mid} />
+                  <Line yAxisId="price" dataKey="twap" stroke="#eab308" strokeWidth={1.6} dot={false} name="TWAP" hide={!visible.twap} />
+                  <Line yAxisId="price" dataKey="bid" stroke="#3b82f6" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Bid" connectNulls hide={!visible.bid} />
+                  <Line yAxisId="price" dataKey="ask" stroke="#f97316" strokeWidth={1.3} strokeDasharray="4 2" dot={false} name="Ask" connectNulls hide={!visible.ask} />
+                  <Line yAxisId="price" dataKey="sg" stroke="#22c55e" strokeWidth={2} dot={false} name="SG" hide={!visible.sg} />
+                  <Line yAxisId="signal" dataKey="slope" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Slope" hide={!visible.slope} />
+                  <Line yAxisId="signal" dataKey="concavity" stroke="#06b6d4" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Concavity" hide={!visible.concavity} />
                 </ComposedChart>
               </ResponsiveContainer>
             )}

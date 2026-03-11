@@ -1,18 +1,19 @@
 @echo off
-setlocal
-
 echo Stopping crypto-mvp services...
 
-taskkill /F /FI "WINDOWTITLE eq Collector*" /T
-taskkill /F /FI "WINDOWTITLE eq Paper Trader*" /T
-taskkill /F /FI "WINDOWTITLE eq Dashboard*" /T
+REM Kill by window title (when started via start script)
+taskkill /F /FI "WINDOWTITLE eq Collector*" /T 2>nul
+taskkill /F /FI "WINDOWTITLE eq Paper Trader*" /T 2>nul
+taskkill /F /FI "WINDOWTITLE eq Dashboard*" /T 2>nul
 
-wmic process where "commandline like '%%apps.collector.main%%'" delete
-wmic process where "commandline like '%%apps.paper_trader.main%%'" delete
-wmic process where "commandline like '%%apps.dashboard.main%%'" delete
-wmic process where "commandline like '%%launch.py%%'" delete
+REM Kill by command line using PowerShell CimInstance (Windows 11)
+powershell -Command "Get-CimInstance Win32_Process -Filter 'name=''python.exe''' | Where-Object {$_.CommandLine -like '*apps.collector.main*'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -Command "Get-CimInstance Win32_Process -Filter 'name=''python.exe''' | Where-Object {$_.CommandLine -like '*apps.paper_trader.main*'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -Command "Get-CimInstance Win32_Process -Filter 'name=''python.exe''' | Where-Object {$_.CommandLine -like '*apps.dashboard.main*'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -Command "Get-CimInstance Win32_Process -Filter 'name=''python.exe''' | Where-Object {$_.CommandLine -like '*launch.py*'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
-docker stop crypto-mvp-postgres
+REM Stop PostgreSQL container
+docker stop crypto-mvp-postgres 2>nul
 
 echo All services stopped.
 pause

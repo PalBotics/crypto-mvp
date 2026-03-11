@@ -1,47 +1,34 @@
 @echo off
-setlocal
-
 echo Starting crypto-mvp...
+echo.
 
+REM Check Docker is running
 docker info >nul 2>&1
 if errorlevel 1 (
-    echo Docker not running. Launching Docker Desktop...
-    start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-
-    set /a WAIT_COUNT=0
-    :wait_docker
-    if %WAIT_COUNT% GEQ 10 goto docker_timeout
-    timeout /t 3 /nobreak >nul
-    <nul set /p =.
-    docker info >nul 2>&1
-    if not errorlevel 1 goto docker_ready
-    set /a WAIT_COUNT+=1
-    goto wait_docker
-
-    :docker_timeout
-    echo.
-    echo Docker did not become ready within 30 seconds.
-    goto after_docker_check
-
-    :docker_ready
-    echo.
-    echo Docker is ready.
+    echo Docker is not running.
+    echo Please start Docker Desktop, wait for it to fully
+    echo load, then press any key to continue...
+    pause
 )
 
-:after_docker_check
-cd /d "%~dp0"
-
+REM Start PostgreSQL
+echo Starting PostgreSQL...
+cd /d C:\Users\Paul\Apps\crypto-mvp
 docker-compose up -d postgres
 if errorlevel 1 (
-    docker start crypto-mvp-postgres >nul 2>&1
+    docker start crypto-mvp-postgres
 )
-echo PostgreSQL started
-
+echo PostgreSQL started.
 timeout /t 3 /nobreak >nul
 
-start "Collector" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .\.venv\Scripts\Activate.ps1; python -m apps.collector.main"
-start "Paper Trader" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .\.venv\Scripts\Activate.ps1; python -m apps.paper_trader.main"
-start "Dashboard" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .\.venv\Scripts\Activate.ps1; python launch.py"
+REM Start services in named windows
+echo Starting services...
+start "Collector" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python -m apps.collector.main"
+start "Paper Trader" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python -m apps.paper_trader.main"
+start "Dashboard" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python launch.py"
 
-echo All services started. Dashboard at http://localhost:8000
+echo.
+echo All services started.
+echo Dashboard at http://localhost:8000
+echo.
 pause
