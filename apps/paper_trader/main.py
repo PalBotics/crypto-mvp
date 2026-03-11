@@ -30,6 +30,8 @@ from core.utils.logging import get_logger
 _log = get_logger(__name__)
 TWAP_OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "data" / "twap_lookback_override.json"
 ALLOWED_TWAP_HOURS = {1, 2, 4, 8, 24}
+DEFAULT_SG_WINDOW = 25
+DEFAULT_SG_DEGREE = 2
 
 
 def _optional_decimal_env(name: str) -> Decimal | None:
@@ -352,6 +354,10 @@ class PaperTradingLoop:
             symbol=strategy.config.symbol,
             account_name=self._market_making_config.account_name,
         )
+        sg_value, slope, concavity = self._latest_sg_snapshot(
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+        )
         account_snapshot = compute_paper_account_snapshot(
             session=self._session,
             account_name=self._market_making_config.account_name,
@@ -366,6 +372,9 @@ class PaperTradingLoop:
             account_value=account_snapshot.account_value,
             avg_entry_price=avg_entry_price,
             allowed_sides=allowed_sides,
+            sg_value=sg_value,
+            slope=slope,
+            concavity=concavity,
         )
 
         # Query for any already-resting pending intents BEFORE adding new ones to the
@@ -565,6 +574,53 @@ class PaperTradingLoop:
             return None
         return Decimal(str(latest.avg_entry_price))
 
+    def _latest_sg_snapshot(
+        self,
+        exchange: str,
+        symbol: str,
+    ) -> tuple[Decimal | None, float | None, float | None]:
+        try:
+            import numpy as np
+            from scipy.signal import savgol_filter
+        except Exception:
+            return None, None, None
+
+        lookback_hours = max(2, int(self._market_making_config.twap_lookback_hours if self._market_making_config is not None else 2))
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+        snapshots = (
+            self._session.execute(
+                select(OrderBookSnapshot)
+                .where(OrderBookSnapshot.exchange == exchange)
+                .where(OrderBookSnapshot.symbol == symbol)
+                .where(OrderBookSnapshot.event_ts > cutoff)
+                .where(OrderBookSnapshot.mid_price.is_not(None))
+                .order_by(OrderBookSnapshot.event_ts.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+        mids = np.array([float(s.mid_price) for s in snapshots], dtype=float)
+        if mids.size < 3:
+            return None, None, None
+
+        window = min(DEFAULT_SG_WINDOW, int(mids.size))
+        if window % 2 == 0:
+            window -= 1
+        degree = min(DEFAULT_SG_DEGREE, window - 1)
+        if window < 3 or degree < 1 or degree >= window:
+            return None, None, None
+
+        sg_values = savgol_filter(mids, window_length=window, polyorder=degree, deriv=0)
+        slope_values = savgol_filter(mids, window_length=window, polyorder=degree, deriv=1)
+        concavity_values = savgol_filter(mids, window_length=window, polyorder=degree, deriv=2)
+
+        return (
+            Decimal(str(sg_values[-1])),
+            float(slope_values[-1]),
+            float(concavity_values[-1]),
+        )
+
 
 def main() -> None:
     """CLI entry point for the paper trading loop."""
@@ -602,6 +658,19 @@ def main() -> None:
     min_spread_bps = Decimal(_min_spread) if _min_spread is not None else None
     _twap = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
     twap_lookback_hours = int(_twap) if _twap is not None else None
+    _sg_enabled = os.environ.get("SG_SIZING_ENABLED")
+    sg_sizing_enabled = _sg_enabled is not None and _sg_enabled.strip().lower() in {"1", "true", "yes", "on"}
+
+    _sg_slope_steep = os.environ.get("SG_SLOPE_STEEP_THRESHOLD")
+    sg_slope_steep_threshold = float(_sg_slope_steep) if _sg_slope_steep is not None else None
+    _sg_slope_rising = os.environ.get("SG_SLOPE_RISING_THRESHOLD")
+    sg_slope_rising_threshold = float(_sg_slope_rising) if _sg_slope_rising is not None else None
+    _sg_distance_near = os.environ.get("SG_DISTANCE_NEAR_BPS")
+    sg_distance_near_bps = float(_sg_distance_near) if _sg_distance_near is not None else None
+    _sg_distance_far = os.environ.get("SG_DISTANCE_FAR_BPS")
+    sg_distance_far_bps = float(_sg_distance_far) if _sg_distance_far is not None else None
+    _sg_concavity = os.environ.get("SG_CONCAVITY_THRESHOLD")
+    sg_concavity_threshold = float(_sg_concavity) if _sg_concavity is not None else None
 
     mm_kwargs = {
         "account_name": os.environ.get("MM_ACCOUNT_NAME", "paper_mm"),
@@ -624,6 +693,17 @@ def main() -> None:
         mm_kwargs["stale_book_seconds"] = stale_book_seconds
     if twap_lookback_hours is not None:
         mm_kwargs["twap_lookback_hours"] = twap_lookback_hours
+    mm_kwargs["sg_sizing_enabled"] = sg_sizing_enabled
+    if sg_slope_steep_threshold is not None:
+        mm_kwargs["sg_slope_steep_threshold"] = sg_slope_steep_threshold
+    if sg_slope_rising_threshold is not None:
+        mm_kwargs["sg_slope_rising_threshold"] = sg_slope_rising_threshold
+    if sg_distance_near_bps is not None:
+        mm_kwargs["sg_distance_near_bps"] = sg_distance_near_bps
+    if sg_distance_far_bps is not None:
+        mm_kwargs["sg_distance_far_bps"] = sg_distance_far_bps
+    if sg_concavity_threshold is not None:
+        mm_kwargs["sg_concavity_threshold"] = sg_concavity_threshold
 
     mm_config = MarketMakingConfig(**mm_kwargs)
 
