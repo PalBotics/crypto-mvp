@@ -294,63 +294,41 @@ class PaperTradingLoop:
             ):
                 intents_executed += 1
 
-                # If a fill drained all pending intents, immediately re-quote in this cycle.
-                # This avoids gaps where no active quote is visible until the next loop tick.
-                pending_now = self._session.execute(pending_stmt).scalars().all()
-                if not pending_now:
-                    generated = self._generate_and_persist_quotes(
-                        strategy=strategy,
-                        snapshot=snapshot,
-                        current_ts=now,
-                    )
-                    if generated > 0:
-                        post_fill_requotes += 1
-                        quote_ctx = strategy.last_quote_context
-                        _log.info(
-                            "post_fill_requote",
-                            bid_price=(str(quote_ctx.bid_quote) if quote_ctx is not None else None),
-                            ask_price=(str(quote_ctx.ask_quote) if quote_ctx is not None else None),
-                            intents_generated=generated,
-                        )
-
-        # 2) Cancel stale pending intents that survived this cycle's re-check.
-        stale_cutoff = now - timedelta(seconds=self._market_making_config.stale_book_seconds)
-        pending_after_check = self._session.execute(pending_stmt).scalars().all()
-        for intent in pending_after_check:
-            if intent.created_ts < stale_cutoff:
-                age_seconds = (now - intent.created_ts).total_seconds()
-                intent.status = "cancelled"
-                _log.info(
-                    "intent_cancelled_stale",
-                    intent_id=str(intent.id),
-                    side=intent.side,
-                    limit_price=(
-                        str(intent.limit_price) if intent.limit_price is not None else None
-                    ),
-                    age_seconds=age_seconds,
+                pending_counts, generated_sides = self._reconcile_market_making_quotes(
+                    strategy=strategy,
+                    snapshot=snapshot,
+                    current_ts=now,
+                    pending_stmt=pending_stmt,
                 )
+                if generated_sides:
+                    post_fill_requotes += 1
+                    quote_ctx = strategy.last_quote_context
+                    _log.info(
+                        "post_fill_requote",
+                        bid_price=(str(quote_ctx.bid_quote) if quote_ctx is not None else None),
+                        ask_price=(str(quote_ctx.ask_quote) if quote_ctx is not None else None),
+                        intents_generated=len(generated_sides),
+                        pending_buys=pending_counts["buy"],
+                        pending_sells=pending_counts["sell"],
+                    )
 
-        self._session.flush()
+        pending_counts, generated_sides = self._reconcile_market_making_quotes(
+            strategy=strategy,
+            snapshot=snapshot,
+            current_ts=now,
+            pending_stmt=pending_stmt,
+        )
 
-        # 3) Only generate fresh quotes if no pending intents remain.
-        remaining_pending = self._session.execute(pending_stmt).scalars().all()
-        intents_generated = 0
-        if not remaining_pending:
-            intents_generated = self._generate_and_persist_quotes(
-                strategy=strategy,
-                snapshot=snapshot,
-                current_ts=now,
-            )
-
-        signal_result = "quoted" if intents_generated > 0 else "no_action"
+        signal_result = self._signal_result_for_market_making(generated_sides)
         _log.info(
             "signal_evaluated",
             iteration=n,
             signal=signal_result,
-            intents_generated=intents_generated,
+            intents_generated=len(generated_sides),
             intents_executed=intents_executed,
             post_fill_requotes=post_fill_requotes,
-            pending_remaining=len(remaining_pending),
+            pending_buys=pending_counts["buy"],
+            pending_sells=pending_counts["sell"],
         )
         return signal_result, intents_executed, None
 
@@ -359,9 +337,10 @@ class PaperTradingLoop:
         strategy: MarketMakingStrategy,
         snapshot: OrderBookSnapshot,
         current_ts: datetime,
-    ) -> int:
+        allowed_sides: set[str] | None = None,
+    ) -> set[str]:
         if self._market_making_config is None:
-            return 0
+            return set()
 
         current_position = self._current_position(
             exchange=strategy.config.exchange,
@@ -386,6 +365,7 @@ class PaperTradingLoop:
             current_ts,
             account_value=account_snapshot.account_value,
             avg_entry_price=avg_entry_price,
+            allowed_sides=allowed_sides,
         )
 
         # Query for any already-resting pending intents BEFORE adding new ones to the
@@ -448,7 +428,78 @@ class PaperTradingLoop:
             self._session.add(quote_snapshot)
 
         self._session.flush()
-        return len(intents)
+        return {intent.side for intent in intents}
+
+    def _reconcile_market_making_quotes(
+        self,
+        strategy: MarketMakingStrategy,
+        snapshot: OrderBookSnapshot,
+        current_ts: datetime,
+        pending_stmt,
+    ) -> tuple[dict[str, int], set[str]]:
+        pending_after_check = self._session.execute(pending_stmt).scalars().all()
+        self._cancel_stale_market_making_intents(pending_after_check, current_ts)
+        self._session.flush()
+
+        pending_ready = self._session.execute(pending_stmt).scalars().all()
+        pending_counts = self._pending_counts_by_side(pending_ready)
+        allowed_sides = {
+            side for side, count in pending_counts.items()
+            if count == 0
+        }
+        if not allowed_sides:
+            return pending_counts, set()
+
+        generated_sides = self._generate_and_persist_quotes(
+            strategy=strategy,
+            snapshot=snapshot,
+            current_ts=current_ts,
+            allowed_sides=allowed_sides,
+        )
+        return pending_counts, generated_sides
+
+    def _cancel_stale_market_making_intents(
+        self,
+        pending_intents: list[OrderIntent],
+        current_ts: datetime,
+    ) -> None:
+        if self._market_making_config is None:
+            return
+
+        stale_cutoff = current_ts - timedelta(seconds=self._market_making_config.stale_book_seconds)
+        for intent in pending_intents:
+            if intent.created_ts < stale_cutoff:
+                age_seconds = (current_ts - intent.created_ts).total_seconds()
+                intent.status = "cancelled"
+                _log.info(
+                    "intent_cancelled_stale",
+                    intent_id=str(intent.id),
+                    side=intent.side,
+                    limit_price=(
+                        str(intent.limit_price) if intent.limit_price is not None else None
+                    ),
+                    age_seconds=age_seconds,
+                )
+
+    @staticmethod
+    def _pending_counts_by_side(pending_intents: list[OrderIntent]) -> dict[str, int]:
+        counts = {"buy": 0, "sell": 0}
+        for intent in pending_intents:
+            side = (intent.side or "").strip().lower()
+            if side in counts:
+                counts[side] += 1
+        return counts
+
+    @staticmethod
+    def _signal_result_for_market_making(generated_sides: set[str]) -> str:
+        normalized_sides = {side.strip().lower() for side in generated_sides}
+        if normalized_sides == {"buy", "sell"}:
+            return "quoted_both"
+        if normalized_sides == {"buy"}:
+            return "quoted_buy"
+        if normalized_sides == {"sell"}:
+            return "quoted_sell"
+        return "no_action"
 
     def _apply_twap_lookback_override(self, strategy: MarketMakingStrategy) -> None:
         if not TWAP_OVERRIDE_PATH.exists() or self._market_making_config is None:

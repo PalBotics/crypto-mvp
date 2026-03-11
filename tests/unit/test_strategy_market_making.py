@@ -235,6 +235,33 @@ def test_twap_insufficient_data_falls_back_to_current_mid() -> None:
     assert strategy.last_quote_context.twap == book.mid_price
 
 
+def test_bid_anchors_to_mid_when_mid_below_avg_entry() -> None:
+    strategy = MarketMakingStrategy(_config())
+    book = _order_book()
+    book.mid_price = Decimal("70000")
+    book.spread_bps = Decimal("10")
+
+    with patch("core.strategy.market_making._log.info") as info_log:
+        intents = strategy.evaluate(
+            session=_session_with_twap(twap=Decimal("70500")),
+            order_book=book,
+            current_position=Decimal("0.001"),
+            current_ts=datetime.now(timezone.utc),
+            avg_entry_price=Decimal("71000"),
+        )
+
+    buy = next(i for i in intents if i.side == "buy")
+    assert buy.limit_price == Decimal("69930.0")
+
+    anchor_call = next(
+        call for call in info_log.call_args_list
+        if call.args and call.args[0] == "bid_anchor_mode_selected"
+    )
+    assert anchor_call.kwargs["bid_anchor_mode"] == "mid"
+    assert anchor_call.kwargs["mid_price"] == "70000"
+    assert anchor_call.kwargs["avg_entry_price"] == "71000"
+
+
 def test_pct_sizing_applied_when_account_value_provided() -> None:
     config = MarketMakingConfig(
         exchange="kraken",
@@ -266,6 +293,73 @@ def test_pct_sizing_applied_when_account_value_provided() -> None:
         call.args and call.args[0] == "pct_sizing_applied"
         for call in info_log.call_args_list
     )
+
+
+def test_pct_sizing_preserves_eight_decimal_btc_precision() -> None:
+    config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        quote_size_pct=Decimal("10"),
+        max_inventory_pct=Decimal("50"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+    book.mid_price = Decimal("70037")
+
+    with patch("core.strategy.market_making._log.info") as info_log:
+        intents = strategy.evaluate(
+            session=_session_with_twap(twap=Decimal("70037")),
+            order_book=book,
+            current_position=Decimal("0.01000000"),
+            current_ts=datetime.now(timezone.utc),
+            account_value=Decimal("1996.74"),
+        )
+
+    buy = next(i for i in intents if i.side == "buy")
+    sell = next(i for i in intents if i.side == "sell")
+
+    assert buy.quantity == Decimal("0.00285098")
+    assert sell.quantity == Decimal("0.00285098")
+    pct_sizing_call = next(
+        call for call in info_log.call_args_list
+        if call.args and call.args[0] == "pct_sizing_applied"
+    )
+    assert pct_sizing_call.kwargs["max_inventory"] == "0.01425489"
+    assert pct_sizing_call.kwargs["quote_size"] == "0.00285098"
+
+
+def test_pct_sizing_does_not_suppress_buy_when_max_inventory_exceeds_position() -> None:
+    config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        quote_size_pct=Decimal("10"),
+        max_inventory_pct=Decimal("50"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+    book.mid_price = Decimal("70037")
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("70037")),
+        order_book=book,
+        current_position=Decimal("0.01000000"),
+        current_ts=datetime.now(timezone.utc),
+        account_value=Decimal("1996.74"),
+    )
+
+    assert sorted(intent.side for intent in intents) == ["buy", "sell"]
 
 
 def test_pct_sizing_falls_back_to_fixed_when_account_value_missing() -> None:

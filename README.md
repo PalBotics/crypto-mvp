@@ -188,6 +188,15 @@ Available endpoints (all read-only, all return JSON):
 
 Interactive docs: `http://localhost:8000/docs`
 
+## Daily Operations
+
+- Start all services: double-click `start-crypto-mvp.bat` from the repo root.
+- Stop all services: double-click `stop-crypto-mvp.bat` from the repo root.
+- Create desktop shortcut: right-click `start-crypto-mvp.bat` and choose
+  `Send to -> Desktop (create shortcut)`.
+- Production note: NSSM-based Windows service installation for production
+  deployment is documented in `docs/DEPLOYMENT.md`.
+
 ## Running the test suite
 
 ```powershell

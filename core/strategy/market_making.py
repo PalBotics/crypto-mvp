@@ -12,6 +12,7 @@ from core.models.order_intent import OrderIntent
 from core.utils.logging import get_logger
 
 _log = get_logger(__name__)
+BTC_QUANT = Decimal("0.00000001")
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,14 @@ class MarketMakingStrategy:
         current_ts: datetime,
         account_value: Decimal | None = None,
         avg_entry_price: Decimal | None = None,
+        allowed_sides: set[str] | None = None,
     ) -> list[OrderIntent]:
         self.last_quote_context = None
+        quoteable_sides = (
+            {"buy", "sell"}
+            if allowed_sides is None
+            else {side.strip().lower() for side in allowed_sides}
+        )
 
         age_seconds = (current_ts - order_book.event_ts).total_seconds()
         if age_seconds > self.config.stale_book_seconds:
@@ -125,7 +132,20 @@ class MarketMakingStrategy:
         )
 
         half_spread = self.config.spread_bps / Decimal("2") / Decimal("10000")
-        bid_price = self._round_price(twap * (Decimal("1") - half_spread))
+        bid_anchor = twap
+        bid_anchor_mode = "twap"
+        if avg_entry_price is not None and order_book.mid_price < avg_entry_price:
+            bid_anchor = order_book.mid_price
+            bid_anchor_mode = "mid"
+            gap_bps = ((avg_entry_price - order_book.mid_price) / avg_entry_price) * Decimal("10000")
+            _log.info(
+                "bid_anchor_mode_selected",
+                bid_anchor_mode=bid_anchor_mode,
+                mid_price=str(order_book.mid_price),
+                avg_entry_price=str(avg_entry_price),
+                gap_bps=str(gap_bps.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
+            )
+        bid_price = self._round_price(bid_anchor * (Decimal("1") - half_spread))
         ask_price = self._round_price(twap * (Decimal("1") + half_spread))
 
         if current_position > Decimal("0") and avg_entry_price is not None:
@@ -144,20 +164,21 @@ class MarketMakingStrategy:
 
         quote_size = self.config.quote_size
         max_inventory = self.config.max_inventory
+        position_btc = self._round_btc_size(current_position)
         pct_sizing_used = False
 
         if account_value is not None and order_book.mid_price not in (None, Decimal("0")):
             btc_price = order_book.mid_price
             if self.config.quote_size_pct is not None:
-                quote_size = (
+                quote_size = self._round_btc_size(
                     (account_value * self.config.quote_size_pct / Decimal("100")) / btc_price
-                ).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+                )
                 pct_sizing_used = True
 
             if self.config.max_inventory_pct is not None:
-                max_inventory = (
+                max_inventory = self._round_btc_size(
                     (account_value * self.config.max_inventory_pct / Decimal("100")) / btc_price
-                ).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+                )
                 pct_sizing_used = True
 
             if pct_sizing_used:
@@ -171,7 +192,7 @@ class MarketMakingStrategy:
 
         intents: list[OrderIntent] = []
 
-        if current_position < max_inventory:
+        if "buy" in quoteable_sides and position_btc < max_inventory:
             intents.append(
                 self._build_intent(
                     side="buy",
@@ -180,14 +201,14 @@ class MarketMakingStrategy:
                     quantity=quote_size,
                 )
             )
-        else:
+        elif "buy" in quoteable_sides:
             _log.info(
                 "buy_suppressed_max_inventory",
-                current_position=str(current_position),
+                current_position=str(position_btc),
                 max_inventory=str(max_inventory),
             )
 
-        if current_position > Decimal("0"):
+        if "sell" in quoteable_sides and current_position > Decimal("0"):
             intents.append(
                 self._build_intent(
                     side="sell",
@@ -196,7 +217,7 @@ class MarketMakingStrategy:
                     quantity=quote_size,
                 )
             )
-        else:
+        elif "sell" in quoteable_sides:
             _log.info(
                 "sell_suppressed_no_inventory",
                 current_position=str(current_position),
@@ -210,7 +231,7 @@ class MarketMakingStrategy:
             ask_price=str(ask_price),
             market_spread_bps=str(market_spread_bps),
             our_spread_bps=str(self.config.spread_bps),
-            current_position=str(current_position),
+            current_position=str(position_btc),
             intents_generated=len(intents),
         )
 
@@ -253,6 +274,10 @@ class MarketMakingStrategy:
     @staticmethod
     def _round_price(price: Decimal) -> Decimal:
         return price.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def _round_btc_size(size: Decimal) -> Decimal:
+        return size.quantize(BTC_QUANT, rounding=ROUND_HALF_UP)
 
     def _build_intent(
         self,

@@ -19,11 +19,14 @@ from apps.paper_trader.main import IterationSummary, PaperTradingLoop
 from core.models.fill_record import FillRecord
 from core.models.funding_payment import FundingPayment
 from core.models.market_tick import MarketTick
+from core.models.order_book_snapshot import OrderBookSnapshot
+from core.models.order_intent import OrderIntent
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.paper.fees import FixedBpsFeeModel
 from core.risk.engine import RiskConfig, RiskEngine
 from core.strategy.funding_capture import FundingCaptureConfig, FundingCaptureStrategy
+from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
 
 # ------------------------------------------------------------------
 # Test constants
@@ -94,6 +97,79 @@ def _make_loop(session: Session) -> PaperTradingLoop:
         fee_model=FixedBpsFeeModel(bps=Decimal("10")),
         iterations=3,
         market_data=MARKET_DATA,
+    )
+
+
+def _seed_mm_snapshot(session: Session, now: datetime) -> None:
+    session.add(
+        OrderBookSnapshot(
+            exchange="kraken",
+            adapter_name="kraken_rest",
+            symbol="XBTUSD",
+            exchange_symbol="XXBTZUSD",
+            bid_price_1=Decimal("59970"),
+            bid_size_1=Decimal("1"),
+            ask_price_1=Decimal("60030"),
+            ask_size_1=Decimal("1"),
+            bid_price_2=Decimal("59969"),
+            bid_size_2=Decimal("1"),
+            ask_price_2=Decimal("60031"),
+            ask_size_2=Decimal("1"),
+            bid_price_3=Decimal("59968"),
+            bid_size_3=Decimal("1"),
+            ask_price_3=Decimal("60032"),
+            ask_size_3=Decimal("1"),
+            spread=Decimal("60"),
+            spread_bps=Decimal("10"),
+            mid_price=Decimal("60000"),
+            event_ts=now,
+            ingested_ts=now,
+        )
+    )
+    session.add(
+        MarketTick(
+            exchange="kraken",
+            adapter_name="kraken_rest",
+            symbol="XBTUSD",
+            exchange_symbol="XXBTZUSD",
+            bid_price=Decimal("59970"),
+            ask_price=Decimal("60030"),
+            mid_price=Decimal("60000"),
+            last_price=Decimal("60000"),
+            bid_size=None,
+            ask_size=None,
+            event_ts=now,
+            ingested_ts=now,
+            sequence_id=None,
+        )
+    )
+    session.commit()
+
+
+def _make_mm_loop(session: Session) -> PaperTradingLoop:
+    strategy_config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    risk_config = RiskConfig(
+        max_data_age_seconds=3600,
+        min_entry_funding_rate=Decimal("0.0001"),
+        max_notional_per_symbol=Decimal("1000000"),
+    )
+    return PaperTradingLoop(
+        session=session,
+        strategy=MarketMakingStrategy(strategy_config),
+        risk_engine=RiskEngine(risk_config),
+        fee_model=FixedBpsFeeModel(bps=Decimal("10")),
+        iterations=1,
+        strategy_mode="market_making",
+        market_making_config=strategy_config,
     )
 
 
@@ -175,3 +251,146 @@ def test_paper_trading_loop_three_iterations(db_session: Session) -> None:
     # All positions closed after the exit cycle
     for pos in positions:
         assert Decimal(str(pos.quantity)) == Decimal("0")
+
+
+def test_market_making_requotes_buy_when_sell_is_already_resting(db_session: Session) -> None:
+    now = datetime.now(timezone.utc)
+    _seed_mm_snapshot(db_session, now)
+    loop = _make_mm_loop(db_session)
+
+    db_session.add(
+        PositionSnapshot(
+            exchange="kraken",
+            account_name="paper_mm",
+            symbol="XBTUSD",
+            instrument_type="spot",
+            side="buy",
+            quantity=Decimal("0.001"),
+            avg_entry_price=Decimal("59000"),
+            mark_price=Decimal("60000"),
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=Decimal("0"),
+            leverage=None,
+            margin_used=None,
+            snapshot_ts=now,
+        )
+    )
+    resting_sell = OrderIntent(
+        strategy_signal_id=None,
+        portfolio_id=None,
+        mode="paper_mm",
+        exchange="kraken",
+        symbol="XBTUSD",
+        side="sell",
+        order_type="limit",
+        time_in_force=None,
+        quantity=Decimal("0.001"),
+        limit_price=Decimal("61000"),
+        reduce_only=False,
+        post_only=False,
+        client_order_id=None,
+        status="pending",
+        created_ts=now,
+    )
+    db_session.add(resting_sell)
+    db_session.commit()
+
+    signal_result, intents_executed, payment = loop.run_one_iteration_market_making(
+        n=1,
+        funding_rate=Decimal("0"),
+        mark_price=Decimal("60000"),
+    )
+
+    pending = db_session.execute(
+        select(OrderIntent)
+        .where(OrderIntent.mode == "paper_mm")
+        .where(OrderIntent.status == "pending")
+        .order_by(OrderIntent.created_ts.asc())
+    ).scalars().all()
+
+    assert payment is None
+    assert intents_executed == 0
+    assert signal_result == "quoted_buy"
+    assert len(pending) == 2
+    assert sorted(intent.side for intent in pending) == ["buy", "sell"]
+    assert next(intent for intent in pending if intent.side == "sell").id == resting_sell.id
+
+
+def test_market_making_reports_no_action_when_both_sides_resting(db_session: Session) -> None:
+    now = datetime.now(timezone.utc)
+    _seed_mm_snapshot(db_session, now)
+    loop = _make_mm_loop(db_session)
+
+    db_session.add(
+        PositionSnapshot(
+            exchange="kraken",
+            account_name="paper_mm",
+            symbol="XBTUSD",
+            instrument_type="spot",
+            side="buy",
+            quantity=Decimal("0.001"),
+            avg_entry_price=Decimal("59000"),
+            mark_price=Decimal("60000"),
+            unrealized_pnl=Decimal("0"),
+            realized_pnl=Decimal("0"),
+            leverage=None,
+            margin_used=None,
+            snapshot_ts=now,
+        )
+    )
+    db_session.add_all(
+        [
+            OrderIntent(
+                strategy_signal_id=None,
+                portfolio_id=None,
+                mode="paper_mm",
+                exchange="kraken",
+                symbol="XBTUSD",
+                side="buy",
+                order_type="limit",
+                time_in_force=None,
+                quantity=Decimal("0.001"),
+                limit_price=Decimal("59000"),
+                reduce_only=False,
+                post_only=False,
+                client_order_id=None,
+                status="pending",
+                created_ts=now,
+            ),
+            OrderIntent(
+                strategy_signal_id=None,
+                portfolio_id=None,
+                mode="paper_mm",
+                exchange="kraken",
+                symbol="XBTUSD",
+                side="sell",
+                order_type="limit",
+                time_in_force=None,
+                quantity=Decimal("0.001"),
+                limit_price=Decimal("61000"),
+                reduce_only=False,
+                post_only=False,
+                client_order_id=None,
+                status="pending",
+                created_ts=now,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    signal_result, intents_executed, payment = loop.run_one_iteration_market_making(
+        n=1,
+        funding_rate=Decimal("0"),
+        mark_price=Decimal("60000"),
+    )
+
+    pending = db_session.execute(
+        select(OrderIntent)
+        .where(OrderIntent.mode == "paper_mm")
+        .where(OrderIntent.status == "pending")
+    ).scalars().all()
+
+    assert payment is None
+    assert intents_executed == 0
+    assert signal_result == "no_action"
+    assert len(pending) == 2
