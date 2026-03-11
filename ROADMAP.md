@@ -82,6 +82,57 @@ Rollout steps:
 - Order book depth awareness
 - Quote freshness and cancel/replace tuning
 
+## Feature Backlog: Multi-Asset Support
+
+**Requested:** 2026-03-11
+**Status:** Backlog — do not start until Phase 8 exit
+criteria are met
+
+**Goal**
+Extend the platform to track and trade cryptocurrencies
+beyond XBTUSD (Bitcoin). Each new asset runs the same
+market-making strategy independently with its own
+position, PnL tracking, and quotes.
+
+**Guiding rule (from project scope)**
+Only add one new axis of complexity at a time. Multi-
+asset work begins only after the single-asset strategy
+has proven a persistent edge with realistic fee and
+slippage assumptions.
+
+**What needs to change when ready**
+
+Backend:
+- Collector: add symbol list to config, collect ticks
+	and order book snapshots per symbol
+- Strategy: symbol passed as config parameter, already
+	supported in MarketMakingConfig
+- Paper trader: run one strategy instance per symbol,
+	independent position and PnL per symbol
+- Database: all tables already keyed by symbol — no
+	schema changes required
+- API: add symbol filter parameter to all endpoints
+	that return market or position data
+
+Dashboard:
+- Symbol selector in header or sidebar to switch active
+	symbol view
+- All panels filter by selected symbol
+- Overview shows aggregate account value across all
+	symbols
+- Market Range chart switches to selected symbol data
+
+**Candidate symbols to add first**
+- ETHUSD (Ethereum) — highest liquidity after BTC
+- SOLUSD (Solana) — high volatility, good for MM
+- Any symbol available on Kraken spot with sufficient
+	order book depth
+
+**Exit criteria before starting**
+- Phase 8 complete: strategy edge proven out of sample
+- Single-asset system stable for 30+ days live
+- No open risk or observability gaps
+
 ### Phase 9 — Strategy 2: funding-rate capture research — **Planned**
 
 - Continue as paper-trading/replay research.
