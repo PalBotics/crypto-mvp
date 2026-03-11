@@ -228,38 +228,64 @@ def test_twap_insufficient_data_falls_back_to_current_mid() -> None:
     bid = next(i for i in intents if i.side == "buy")
     ask = next(i for i in intents if i.side == "sell")
 
-    assert bid.limit_price == Decimal("59940.0")
-    assert ask.limit_price == Decimal("60060.0")
+    assert bid.limit_price == Decimal("59880.0")
+    assert ask.limit_price == Decimal("60420.0")
     assert strategy.last_quote_context is not None
     assert strategy.last_quote_context.snapshot_count == 1
     assert strategy.last_quote_context.twap == book.mid_price
 
 
-def test_bid_anchors_to_mid_when_mid_below_avg_entry() -> None:
+def test_bid_anchors_to_twap_when_mid_below_avg_entry() -> None:
     strategy = MarketMakingStrategy(_config())
     book = _order_book()
     book.mid_price = Decimal("70000")
     book.spread_bps = Decimal("10")
 
-    with patch("core.strategy.market_making._log.info") as info_log:
-        intents = strategy.evaluate(
-            session=_session_with_twap(twap=Decimal("70500")),
-            order_book=book,
-            current_position=Decimal("0.001"),
-            current_ts=datetime.now(timezone.utc),
-            avg_entry_price=Decimal("71000"),
-        )
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("70500")),
+        order_book=book,
+        current_position=Decimal("0.001"),
+        current_ts=datetime.now(timezone.utc),
+        twap=Decimal("70500"),
+        avg_entry_price=Decimal("71000"),
+    )
 
     buy = next(i for i in intents if i.side == "buy")
-    assert buy.limit_price == Decimal("69930.0")
+    assert buy.limit_price == Decimal("70359.0")
 
-    anchor_call = next(
-        call for call in info_log.call_args_list
-        if call.args and call.args[0] == "bid_anchor_mode_selected"
+
+def test_buy_price_uses_twap_when_available() -> None:
+    strategy = MarketMakingStrategy(_config())
+    book = _order_book()
+    book.mid_price = Decimal("60000")
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0.001"),
+        current_ts=datetime.now(timezone.utc),
+        twap=Decimal("60500"),
     )
-    assert anchor_call.kwargs["bid_anchor_mode"] == "mid"
-    assert anchor_call.kwargs["mid_price"] == "70000"
-    assert anchor_call.kwargs["avg_entry_price"] == "71000"
+
+    buy = next(i for i in intents if i.side == "buy")
+    assert buy.limit_price == Decimal("60379.0")
+
+
+def test_buy_price_falls_back_to_mid_when_twap_none() -> None:
+    strategy = MarketMakingStrategy(_config())
+    book = _order_book()
+    book.mid_price = Decimal("60000")
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("61000")),
+        order_book=book,
+        current_position=Decimal("0.001"),
+        current_ts=datetime.now(timezone.utc),
+        twap=None,
+    )
+
+    buy = next(i for i in intents if i.side == "buy")
+    assert buy.limit_price == Decimal("59880.0")
 
 
 def test_pct_sizing_applied_when_account_value_provided() -> None:
@@ -455,6 +481,7 @@ def test_sg_far_rising_returns_150pct() -> None:
     strategy = MarketMakingStrategy(config)
 
     multiplier = strategy._compute_sg_size_multiplier(
+        side="buy",
         mid_price=Decimal("60000"),
         sg_value=Decimal("60300"),
         slope=20.0,
@@ -469,6 +496,7 @@ def test_sg_mid_flat_returns_50pct() -> None:
     strategy = MarketMakingStrategy(config)
 
     multiplier = strategy._compute_sg_size_multiplier(
+        side="buy",
         mid_price=Decimal("60000"),
         sg_value=Decimal("60120"),
         slope=0.0,
@@ -483,6 +511,7 @@ def test_sg_concavity_up_multiplies_125pct() -> None:
     strategy = MarketMakingStrategy(config)
 
     multiplier = strategy._compute_sg_size_multiplier(
+        side="buy",
         mid_price=Decimal("60000"),
         sg_value=Decimal("60120"),
         slope=0.0,
@@ -497,6 +526,7 @@ def test_sg_concavity_down_multiplies_50pct() -> None:
     strategy = MarketMakingStrategy(config)
 
     multiplier = strategy._compute_sg_size_multiplier(
+        side="buy",
         mid_price=Decimal("60000"),
         sg_value=Decimal("60120"),
         slope=0.0,
@@ -511,6 +541,7 @@ def test_sg_none_values_falls_back_to_base() -> None:
     strategy = MarketMakingStrategy(config)
 
     multiplier = strategy._compute_sg_size_multiplier(
+        side="buy",
         mid_price=Decimal("60000"),
         sg_value=None,
         slope=None,
@@ -518,3 +549,191 @@ def test_sg_none_values_falls_back_to_base() -> None:
     )
 
     assert multiplier == Decimal("1.0")
+
+
+def test_sg_sell_near_rising_suppresses_sell() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(),
+        order_book=_order_book(),
+        current_position=Decimal("0.01"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+        sg_value=Decimal("60500"),
+        slope=20.0,
+        concavity=0.0,
+    )
+
+    assert intents == []
+
+
+def test_sg_sell_far_steep_returns_150pct() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    multiplier = strategy._compute_sg_size_multiplier(
+        side="sell",
+        mid_price=Decimal("60060"),
+        sg_value=Decimal("59600"),
+        slope=-35.0,
+        concavity=0.0,
+    )
+
+    assert multiplier == Decimal("1.50")
+
+
+def test_sg_sell_mid_flat_returns_50pct() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    multiplier = strategy._compute_sg_size_multiplier(
+        side="sell",
+        mid_price=Decimal("60060"),
+        sg_value=Decimal("59900"),
+        slope=0.0,
+        concavity=0.0,
+    )
+
+    assert multiplier == Decimal("0.50")
+
+
+def test_sg_sell_capped_at_position_qty() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(),
+        order_book=_order_book(),
+        current_position=Decimal("0.0011"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+        sg_value=Decimal("59600"),
+        slope=-35.0,
+        concavity=0.0,
+    )
+
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+    assert intents[0].quantity == Decimal("0.00110000")
+
+
+def test_sg_sell_suppressed_when_no_position() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(),
+        order_book=_order_book(),
+        current_position=Decimal("0"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+        sg_value=Decimal("59600"),
+        slope=-35.0,
+        concavity=0.0,
+    )
+
+    assert intents == []
+
+
+def test_sg_sell_ask_price_unchanged() -> None:
+    base_strategy = MarketMakingStrategy(MarketMakingConfig(sg_sizing_enabled=False))
+    sg_strategy = MarketMakingStrategy(MarketMakingConfig(sg_sizing_enabled=True))
+
+    base_intents = base_strategy.evaluate(
+        session=_session_with_twap(),
+        order_book=_order_book(),
+        current_position=Decimal("0.01"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+    )
+    sg_intents = sg_strategy.evaluate(
+        session=_session_with_twap(),
+        order_book=_order_book(),
+        current_position=Decimal("0.01"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+        sg_value=Decimal("59900"),
+        slope=0.0,
+        concavity=0.0,
+    )
+
+    assert len(base_intents) == 1
+    assert len(sg_intents) == 1
+    assert base_intents[0].limit_price == Decimal("60420.0")
+    assert sg_intents[0].limit_price == base_intents[0].limit_price
+
+
+def test_ask_price_covers_fees_and_profit() -> None:
+    config = MarketMakingConfig(
+        spread_bps=Decimal("20"),
+        mm_fee_bps=25.0,
+        mm_target_profit_bps=20.0,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("70500")),
+        order_book=book,
+        current_position=Decimal("0.01"),
+        current_ts=datetime.now(timezone.utc),
+        twap=Decimal("70500"),
+        avg_entry_price=Decimal("70566"),
+    )
+
+    ask = next(i for i in intents if i.side == "sell")
+    assert ask.limit_price == Decimal("71060.0")
+
+
+def test_ask_price_falls_back_to_twap_when_no_entry() -> None:
+    config = MarketMakingConfig(
+        spread_bps=Decimal("20"),
+        mm_fee_bps=25.0,
+        mm_target_profit_bps=20.0,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0.01"),
+        current_ts=datetime.now(timezone.utc),
+        twap=Decimal("60500"),
+        avg_entry_price=None,
+    )
+
+    ask = next(i for i in intents if i.side == "sell")
+    assert ask.limit_price == Decimal("60923.5")
+
+
+def test_sg_sell_concavity_up_multiplies_125pct() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    multiplier = strategy._compute_sg_size_multiplier(
+        side="sell",
+        mid_price=Decimal("60060"),
+        sg_value=Decimal("59900"),
+        slope=0.0,
+        concavity=2.0,
+    )
+
+    assert multiplier == Decimal("0.6250")
+
+
+def test_sg_sell_concavity_down_multiplies_50pct() -> None:
+    config = MarketMakingConfig(sg_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+
+    multiplier = strategy._compute_sg_size_multiplier(
+        side="sell",
+        mid_price=Decimal("60060"),
+        sg_value=Decimal("59900"),
+        slope=0.0,
+        concavity=-2.0,
+    )
+
+    assert multiplier == Decimal("0.2500")

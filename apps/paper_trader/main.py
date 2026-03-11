@@ -358,6 +358,10 @@ class PaperTradingLoop:
             exchange=strategy.config.exchange,
             symbol=strategy.config.symbol,
         )
+        twap = self._latest_twap_snapshot(
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+        )
         account_snapshot = compute_paper_account_snapshot(
             session=self._session,
             account_name=self._market_making_config.account_name,
@@ -369,6 +373,7 @@ class PaperTradingLoop:
             snapshot,
             current_position,
             current_ts,
+            twap=twap,
             account_value=account_snapshot.account_value,
             avg_entry_price=avg_entry_price,
             allowed_sides=allowed_sides,
@@ -621,6 +626,32 @@ class PaperTradingLoop:
             float(concavity_values[-1]),
         )
 
+    def _latest_twap_snapshot(
+        self,
+        exchange: str,
+        symbol: str,
+    ) -> Decimal | None:
+        lookback_hours = max(2, int(self._market_making_config.twap_lookback_hours if self._market_making_config is not None else 2))
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+        snapshots = (
+            self._session.execute(
+                select(OrderBookSnapshot)
+                .where(OrderBookSnapshot.exchange == exchange)
+                .where(OrderBookSnapshot.symbol == symbol)
+                .where(OrderBookSnapshot.event_ts > cutoff)
+                .where(OrderBookSnapshot.mid_price.is_not(None))
+                .order_by(OrderBookSnapshot.event_ts.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+        mids = [Decimal(str(s.mid_price)) for s in snapshots if s.mid_price is not None]
+        if len(mids) < 2:
+            return None
+
+        return sum(mids, Decimal("0")) / Decimal(len(mids))
+
 
 def main() -> None:
     """CLI entry point for the paper trading loop."""
@@ -654,6 +685,10 @@ def main() -> None:
     max_inventory = Decimal(_inventory) if _inventory is not None else None
     max_inventory_pct = _optional_decimal_env("MM_MAX_INVENTORY_PCT")
     min_profit_bps = _optional_decimal_env("MM_MIN_PROFIT_BPS")
+    _mm_fee_bps = os.environ.get("MM_FEE_BPS")
+    mm_fee_bps = float(_mm_fee_bps) if _mm_fee_bps is not None else None
+    _mm_target_profit_bps = os.environ.get("MM_TARGET_PROFIT_BPS")
+    mm_target_profit_bps = float(_mm_target_profit_bps) if _mm_target_profit_bps is not None else None
     _min_spread = os.environ.get("MM_MIN_SPREAD_BPS")
     min_spread_bps = Decimal(_min_spread) if _min_spread is not None else None
     _twap = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
@@ -687,6 +722,10 @@ def main() -> None:
         mm_kwargs["max_inventory_pct"] = max_inventory_pct
     if min_profit_bps is not None:
         mm_kwargs["min_profit_bps"] = min_profit_bps
+    if mm_fee_bps is not None:
+        mm_kwargs["mm_fee_bps"] = mm_fee_bps
+    if mm_target_profit_bps is not None:
+        mm_kwargs["mm_target_profit_bps"] = mm_target_profit_bps
     if min_spread_bps is not None:
         mm_kwargs["min_spread_bps"] = min_spread_bps
     if stale_book_seconds is not None:

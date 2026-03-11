@@ -26,6 +26,8 @@ class MarketMakingConfig:
     quote_size_pct: Decimal | None = None
     max_inventory_pct: Decimal | None = None
     min_profit_bps: Decimal = Decimal("10")
+    mm_fee_bps: float = 25.0
+    mm_target_profit_bps: float = 20.0
     min_spread_bps: Decimal = Decimal("0.01")
     stale_book_seconds: int = 120
     twap_lookback_hours: int = 2
@@ -61,6 +63,7 @@ class MarketMakingStrategy:
         order_book: OrderBookSnapshot,
         current_position: Decimal,
         current_ts: datetime,
+        twap: Decimal | None = None,
         account_value: Decimal | None = None,
         avg_entry_price: Decimal | None = None,
         allowed_sides: set[str] | None = None,
@@ -123,17 +126,17 @@ class MarketMakingStrategy:
             _log.info("market_making_signal_generated", intents_generated=0)
             return []
 
-        twap, snapshot_count = self._calculate_twap(
+        calculated_twap, snapshot_count = self._calculate_twap(
             session=session,
             current_ts=current_ts,
             current_mid=order_book.mid_price,
         )
         twap_vs_mid_bps = Decimal("0")
         if order_book.mid_price != Decimal("0"):
-            twap_vs_mid_bps = ((twap - order_book.mid_price) / order_book.mid_price) * Decimal("10000")
+            twap_vs_mid_bps = ((calculated_twap - order_book.mid_price) / order_book.mid_price) * Decimal("10000")
         _log.info(
             "twap_calculated",
-            twap=str(twap),
+            twap=str(calculated_twap),
             current_mid=str(order_book.mid_price),
             twap_lookback_hours=self.config.twap_lookback_hours,
             snapshot_count=snapshot_count,
@@ -141,35 +144,19 @@ class MarketMakingStrategy:
         )
 
         half_spread = self.config.spread_bps / Decimal("2") / Decimal("10000")
-        bid_anchor = twap
-        bid_anchor_mode = "twap"
-        if avg_entry_price is not None and order_book.mid_price < avg_entry_price:
-            bid_anchor = order_book.mid_price
-            bid_anchor_mode = "mid"
-            gap_bps = ((avg_entry_price - order_book.mid_price) / avg_entry_price) * Decimal("10000")
-            _log.info(
-                "bid_anchor_mode_selected",
-                bid_anchor_mode=bid_anchor_mode,
-                mid_price=str(order_book.mid_price),
-                avg_entry_price=str(avg_entry_price),
-                gap_bps=str(gap_bps.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
-            )
-        bid_price = self._round_price(bid_anchor * (Decimal("1") - half_spread))
-        ask_price = self._round_price(twap * (Decimal("1") + half_spread))
-
-        if current_position > Decimal("0") and avg_entry_price is not None:
-            required_bps = (self.config.spread_bps * Decimal("2")) + self.config.min_profit_bps
-            required_markup = required_bps / Decimal("10000")
-            cost_basis_ask = self._round_price(avg_entry_price * (Decimal("1") + required_markup))
-            if cost_basis_ask > ask_price:
-                ask_price = cost_basis_ask
-                _log.info(
-                    "cost_basis_sell_applied",
-                    avg_entry_price=str(avg_entry_price),
-                    min_profit_bps=str(self.config.min_profit_bps),
-                    spread_bps=str(self.config.spread_bps),
-                    ask_price=str(ask_price),
-                )
+        buy_spread = self.config.spread_bps / Decimal("10000")
+        buy_reference_price = twap if twap is not None else order_book.mid_price
+        bid_price = self._round_price(buy_reference_price * (Decimal("1") - buy_spread))
+        total_markup = (
+            Decimal(str((2 * self.config.mm_fee_bps) + self.config.mm_target_profit_bps))
+            / Decimal("10000")
+        )
+        ask_reference = (
+            avg_entry_price
+            if avg_entry_price is not None and avg_entry_price > Decimal("0")
+            else (twap if twap is not None else calculated_twap)
+        )
+        ask_price = self._round_price(ask_reference * (Decimal("1") + total_markup))
 
         quote_size = self.config.quote_size
         max_inventory = self.config.max_inventory
@@ -200,15 +187,26 @@ class MarketMakingStrategy:
                 )
 
         buy_quote_size = quote_size
-        sg_multiplier = Decimal("1.0")
+        buy_multiplier = Decimal("1.0")
+        sell_quote_size = quote_size
+        sell_multiplier = Decimal("1.0")
         if self.config.sg_sizing_enabled:
-            sg_multiplier = self._compute_sg_size_multiplier(
+            buy_multiplier = self._compute_sg_size_multiplier(
+                side="buy",
                 mid_price=order_book.mid_price,
                 sg_value=sg_value,
                 slope=slope,
                 concavity=concavity,
             )
-            buy_quote_size = self._round_btc_size(quote_size * sg_multiplier)
+            buy_quote_size = self._round_btc_size(quote_size * buy_multiplier)
+            sell_multiplier = self._compute_sg_size_multiplier(
+                side="sell",
+                mid_price=ask_price,
+                sg_value=sg_value,
+                slope=slope,
+                concavity=concavity,
+            )
+            sell_quote_size = self._round_btc_size(quote_size * sell_multiplier)
 
         intents: list[OrderIntent] = []
 
@@ -225,7 +223,7 @@ class MarketMakingStrategy:
             else:
                 _log.info(
                     "sg_buy_suppressed",
-                    multiplier=str(sg_multiplier),
+                    multiplier=str(buy_multiplier),
                     base_quote_size=str(quote_size),
                     buy_quote_size=str(buy_quote_size),
                 )
@@ -236,25 +234,45 @@ class MarketMakingStrategy:
                 max_inventory=str(max_inventory),
             )
 
-        if "sell" in quoteable_sides and current_position > Decimal("0"):
-            intents.append(
-                self._build_intent(
-                    side="sell",
-                    limit_price=ask_price,
-                    current_ts=current_ts,
-                    quantity=quote_size,
+        current_position_qty = position_btc if position_btc > Decimal("0") else Decimal("0")
+        if "sell" in quoteable_sides:
+            if current_position_qty <= Decimal("0"):
+                _log.info(
+                    "sg_sell_suppressed",
+                    reason="zero_position",
+                    current_position_qty=str(current_position_qty),
                 )
-            )
-        elif "sell" in quoteable_sides:
-            _log.info(
-                "sell_suppressed_no_inventory",
-                current_position=str(current_position),
-            )
+            elif sell_quote_size <= Decimal("0"):
+                _log.info(
+                    "sg_sell_suppressed",
+                    reason="zero_multiplier",
+                    multiplier=str(sell_multiplier),
+                    base_quote_size=str(quote_size),
+                    sell_quote_size=str(sell_quote_size),
+                )
+            else:
+                uncapped_sell_size = sell_quote_size
+                sell_quote_size = min(sell_quote_size, current_position_qty)
+                if sell_quote_size < uncapped_sell_size:
+                    _log.info(
+                        "sg_sell_capped",
+                        uncapped_sell_size=str(uncapped_sell_size),
+                        capped_sell_size=str(sell_quote_size),
+                        current_position_qty=str(current_position_qty),
+                    )
+                intents.append(
+                    self._build_intent(
+                        side="sell",
+                        limit_price=ask_price,
+                        current_ts=current_ts,
+                        quantity=sell_quote_size,
+                    )
+                )
 
         _log.info(
             "market_making_signal_generated",
             mid_price=str(order_book.mid_price),
-            twap=str(twap),
+            twap=str(calculated_twap),
             bid_price=str(bid_price),
             ask_price=str(ask_price),
             market_spread_bps=str(market_spread_bps),
@@ -264,7 +282,7 @@ class MarketMakingStrategy:
         )
 
         self.last_quote_context = QuoteContext(
-            twap=twap,
+            twap=calculated_twap,
             current_mid=order_book.mid_price,
             bid_quote=bid_price,
             ask_quote=ask_price,
@@ -275,19 +293,26 @@ class MarketMakingStrategy:
 
     def _compute_sg_size_multiplier(
         self,
+        side: str,
         mid_price: Decimal,
         sg_value: Decimal | None,
         slope: float | None,
         concavity: float | None,
     ) -> Decimal:
-        """Returns a SG-driven buy-size multiplier."""
+        """Returns a SG-driven size multiplier for buy or sell side."""
         if not self.config.sg_sizing_enabled:
             return Decimal("1.0")
 
         if sg_value is None or slope is None or concavity is None or sg_value == Decimal("0"):
             return Decimal("1.0")
 
-        distance_bps = ((sg_value - mid_price) / sg_value) * Decimal("10000")
+        if side == "buy":
+            distance_bps = ((sg_value - mid_price) / sg_value) * Decimal("10000")
+        elif side == "sell":
+            distance_bps = ((mid_price - sg_value) / sg_value) * Decimal("10000")
+        else:
+            return Decimal("1.0")
+
         if distance_bps < Decimal("0"):
             distance_bps = Decimal("0")
 
@@ -307,17 +332,30 @@ class MarketMakingStrategy:
         else:
             distance_zone = "far"
 
-        matrix: dict[tuple[str, str], Decimal] = {
-            ("near", "steep"): Decimal("0.0"),
-            ("near", "flat"): Decimal("0.10"),
-            ("near", "rising"): Decimal("0.25"),
-            ("mid", "steep"): Decimal("0.10"),
-            ("mid", "flat"): Decimal("0.50"),
-            ("mid", "rising"): Decimal("0.75"),
-            ("far", "steep"): Decimal("0.25"),
-            ("far", "flat"): Decimal("1.00"),
-            ("far", "rising"): Decimal("1.50"),
-        }
+        if side == "buy":
+            matrix: dict[tuple[str, str], Decimal] = {
+                ("near", "steep"): Decimal("0.0"),
+                ("near", "flat"): Decimal("0.10"),
+                ("near", "rising"): Decimal("0.25"),
+                ("mid", "steep"): Decimal("0.10"),
+                ("mid", "flat"): Decimal("0.50"),
+                ("mid", "rising"): Decimal("0.75"),
+                ("far", "steep"): Decimal("0.25"),
+                ("far", "flat"): Decimal("1.00"),
+                ("far", "rising"): Decimal("1.50"),
+            }
+        else:
+            matrix = {
+                ("near", "steep"): Decimal("0.25"),
+                ("near", "flat"): Decimal("0.10"),
+                ("near", "rising"): Decimal("0.0"),
+                ("mid", "steep"): Decimal("0.75"),
+                ("mid", "flat"): Decimal("0.50"),
+                ("mid", "rising"): Decimal("0.10"),
+                ("far", "steep"): Decimal("1.50"),
+                ("far", "flat"): Decimal("1.00"),
+                ("far", "rising"): Decimal("0.25"),
+            }
         base_multiplier = matrix[(distance_zone, slope_zone)]
 
         if concavity > self.config.sg_concavity_threshold:
@@ -330,6 +368,7 @@ class MarketMakingStrategy:
         final_multiplier = base_multiplier * concavity_modifier
         _log.info(
             "sg_sizing_applied",
+            side=side,
             slope=slope,
             concavity=concavity,
             distance_bps=str(distance_bps.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
