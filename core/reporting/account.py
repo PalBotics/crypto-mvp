@@ -11,6 +11,7 @@ from core.models.fill_record import FillRecord
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
 from core.models.order_record import OrderRecord
+from core.models.paper_deposit import PaperDeposit
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.utils.logging import get_logger
@@ -43,6 +44,8 @@ def resolve_paper_starting_capital() -> Decimal:
 @dataclass(frozen=True)
 class PaperAccountSnapshot:
     starting_capital: Decimal
+    total_deposited: Decimal
+    deposit_count: int
     realized_pnl: Decimal
     fees_paid: Decimal
     unrealized_pnl: Decimal
@@ -56,6 +59,8 @@ class PaperAccountSnapshot:
     def to_api_dict(self) -> dict:
         return {
             "starting_capital": str(_q(self.starting_capital, USD_QUANT)),
+            "total_deposited": str(_q(self.total_deposited, USD_QUANT)),
+            "deposit_count": self.deposit_count,
             "realized_pnl": str(_q(self.realized_pnl, USD_QUANT)),
             "fees_paid": str(_q(self.fees_paid, USD_QUANT)),
             "unrealized_pnl": str(_q(self.unrealized_pnl, USD_QUANT)),
@@ -76,6 +81,13 @@ def compute_paper_account_snapshot(
     starting_capital: Decimal | None = None,
 ) -> PaperAccountSnapshot:
     capital = resolve_paper_starting_capital() if starting_capital is None else starting_capital
+
+    deposit_row = session.execute(
+        select(func.count(PaperDeposit.id), func.sum(PaperDeposit.amount))
+    ).one()
+    deposit_count = int(deposit_row[0] or 0)
+    total_deposited = _to_decimal(deposit_row[1])
+    effective_capital = capital + total_deposited
 
     realized_pnl = _to_decimal(
         session.execute(
@@ -131,12 +143,13 @@ def compute_paper_account_snapshot(
     mid_price = _to_decimal(latest_book.mid_price) if latest_book is not None else Decimal("0")
     btc_value_usd = btc_held * mid_price
 
-    account_value = capital + realized_pnl - fees_paid + unrealized_pnl
+    account_value = effective_capital + realized_pnl - fees_paid + unrealized_pnl
     cash_value = account_value - btc_value_usd
 
     _log.info(
         "paper_account_value_components",
         starting_capital=str(capital),
+        total_deposited=str(total_deposited),
         realized_pnl=str(realized_pnl),
         fees_paid=str(fees_paid),
         unrealized_pnl=str(unrealized_pnl),
@@ -149,6 +162,8 @@ def compute_paper_account_snapshot(
 
     return PaperAccountSnapshot(
         starting_capital=capital,
+        total_deposited=total_deposited,
+        deposit_count=deposit_count,
         realized_pnl=realized_pnl,
         fees_paid=fees_paid,
         unrealized_pnl=unrealized_pnl,

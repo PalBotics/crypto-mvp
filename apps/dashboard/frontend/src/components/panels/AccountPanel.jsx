@@ -36,6 +36,7 @@ export default function AccountPanel() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
             {row('Starting Capital', `$${formatUSD(data.starting_capital)}`)}
+            {Number(data.total_deposited ?? '0') > 0 && row('Deposits', `$${formatUSD(data.total_deposited)}`, 'font-mono text-xs text-cyan-400')}
             {row('Realized PnL', formatUSD(data.realized_pnl), `font-mono text-xs ${signColor(data.realized_pnl)}`)}
             {row('Fees Paid', formatUSD(data.fees_paid), `font-mono text-xs ${signColor(`-${data.fees_paid}`)}`)}
           </div>

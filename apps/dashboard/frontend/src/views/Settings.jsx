@@ -2,6 +2,7 @@ import useHealth from '../hooks/useHealth'
 import useRunSummary from '../hooks/useRunSummary'
 import LoadingState, { ErrorState } from '../components/common/Loading'
 import { formatUSD } from '../utils/format'
+import DepositPanel from '../components/panels/DepositPanel'
 
 function InfoRow({ label, value, valueClassName = 'font-mono text-xs text-text-primary' }) {
   return (
@@ -31,6 +32,8 @@ export default function Settings() {
         <InfoRow label="Mode" value="paper trading" />
         <InfoRow label="API Status" value={apiStatus} valueClassName={apiStatusClass} />
       </div>
+
+      <DepositPanel />
 
       <div className="card p-4 flex flex-col gap-3">
         <span className="label">Run Statistics</span>

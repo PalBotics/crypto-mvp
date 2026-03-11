@@ -5,6 +5,7 @@ from core.models.market_tick import MarketTick
 from core.models.order_intent import OrderIntent
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_record import OrderRecord
+from core.models.paper_deposit import PaperDeposit
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.models.quote_snapshot import QuoteSnapshot
@@ -20,6 +21,7 @@ __all__ = [
     "OrderIntent",
     "OrderBookSnapshot",
     "OrderRecord",
+    "PaperDeposit",
     "PnLSnapshot",
     "PositionSnapshot",
     "QuoteSnapshot",

@@ -25,6 +25,7 @@ from core.models.fill_record import FillRecord
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
 from core.models.order_record import OrderRecord
+from core.models.paper_deposit import PaperDeposit
 from core.models.quote_snapshot import QuoteSnapshot
 from core.reporting.queries import (
     get_recent_funding_rates,
@@ -67,6 +68,11 @@ def _to_fixed_8(value: Decimal | float | int) -> str:
 
 class TwapLookbackRequest(BaseModel):
     hours: int
+
+
+class DepositRequest(BaseModel):
+    amount: str
+    note: str | None = None
 
 
 def _resolve_twap_lookback_hours() -> int:
@@ -279,6 +285,72 @@ def account(session: SessionDep) -> dict:
         symbol="XBTUSD",
     )
     return snapshot.to_api_dict()
+
+
+@router.post("/deposit")
+def deposit_create(payload: DepositRequest, session: SessionDep) -> dict:
+    try:
+        amount = Decimal(payload.amount.strip())
+    except Exception:
+        raise HTTPException(status_code=422, detail="amount must be a valid number")
+
+    if amount <= Decimal("0"):
+        raise HTTPException(status_code=422, detail="amount must be positive")
+    if amount > Decimal("10000"):
+        raise HTTPException(status_code=422, detail="amount must not exceed 10000 per deposit")
+
+    note = payload.note.strip() if payload.note else None
+
+    record = PaperDeposit(
+        amount=amount,
+        note=note,
+        created_ts=datetime.now(timezone.utc),
+    )
+    session.add(record)
+    session.flush()
+
+    snapshot = compute_paper_account_snapshot(
+        session=session,
+        account_name="paper_mm",
+        exchange="kraken",
+        symbol="XBTUSD",
+    )
+    session.commit()
+
+    return {
+        "id": str(record.id),
+        "amount": str(_round_decimal(amount, USD_QUANT)),
+        "note": record.note,
+        "created_ts": record.created_ts.isoformat().replace("+00:00", "Z"),
+        "new_account_value": str(_round_decimal(snapshot.account_value, USD_QUANT)),
+    }
+
+
+@router.get("/deposits")
+def deposits_list(session: SessionDep) -> dict:
+    records = session.execute(
+        select(PaperDeposit).order_by(PaperDeposit.created_ts.desc())
+    ).scalars().all()
+
+    total = sum((r.amount for r in records), Decimal("0"))
+
+    return {
+        "deposits": [
+            {
+                "id": str(r.id),
+                "amount": str(_round_decimal(Decimal(str(r.amount)), USD_QUANT)),
+                "note": r.note,
+                "created_ts": (
+                    r.created_ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    if r.created_ts.tzinfo is not None
+                    else r.created_ts.isoformat() + "Z"
+                ),
+            }
+            for r in records
+        ],
+        "total_deposited": str(_round_decimal(total, USD_QUANT)),
+        "deposit_count": len(records),
+    }
 
 
 @router.get("/market-range")
