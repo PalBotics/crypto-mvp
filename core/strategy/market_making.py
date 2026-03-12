@@ -28,15 +28,18 @@ class MarketMakingConfig:
     min_profit_bps: Decimal = Decimal("10")
     mm_fee_bps: float = 25.0
     mm_target_profit_bps: float = 20.0
+    bid_offset_bps: float = 120.0
     min_spread_bps: Decimal = Decimal("0.01")
     stale_book_seconds: int = 120
     twap_lookback_hours: int = 2
-    sg_slope_steep_threshold: float = -30.0
-    sg_slope_rising_threshold: float = 15.0
-    sg_distance_near_bps: float = 10.0
-    sg_distance_far_bps: float = 40.0
+    ask_sg_near_bps: float = 30.0
+    ask_sg_far_bps: float = 80.0
+    twap_slope_mild_threshold: float = -5.0
+    twap_slope_steep_threshold: float = -15.0
+    twap_slope_rising_threshold: float = 5.0
+    twap_slope_steep_rising_threshold: float = 15.0
     sg_concavity_threshold: float = 1.0
-    sg_sizing_enabled: bool = False
+    unified_sizing_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.twap_lookback_hours not in {1, 2, 4, 8, 24}:
@@ -67,8 +70,7 @@ class MarketMakingStrategy:
         account_value: Decimal | None = None,
         avg_entry_price: Decimal | None = None,
         allowed_sides: set[str] | None = None,
-        sg_value: Decimal | None = None,
-        slope: float | None = None,
+        twap_slope_bps_per_min: float | None = None,
         concavity: float | None = None,
     ) -> list[OrderIntent]:
         self.last_quote_context = None
@@ -143,10 +145,6 @@ class MarketMakingStrategy:
             twap_vs_mid_bps=str(twap_vs_mid_bps.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
         )
 
-        half_spread = self.config.spread_bps / Decimal("2") / Decimal("10000")
-        buy_spread = self.config.spread_bps / Decimal("10000")
-        buy_reference_price = twap if twap is not None else order_book.mid_price
-        bid_price = self._round_price(buy_reference_price * (Decimal("1") - buy_spread))
         total_markup = (
             Decimal(str((2 * self.config.mm_fee_bps) + self.config.mm_target_profit_bps))
             / Decimal("10000")
@@ -157,6 +155,8 @@ class MarketMakingStrategy:
             else (twap if twap is not None else calculated_twap)
         )
         ask_price = self._round_price(ask_reference * (Decimal("1") + total_markup))
+        bid_offset = Decimal(str(self.config.bid_offset_bps)) / Decimal("10000")
+        bid_price = self._round_price(ask_price * (Decimal("1") - bid_offset))
 
         quote_size = self.config.quote_size
         max_inventory = self.config.max_inventory
@@ -187,26 +187,23 @@ class MarketMakingStrategy:
                 )
 
         buy_quote_size = quote_size
-        buy_multiplier = Decimal("1.0")
         sell_quote_size = quote_size
-        sell_multiplier = Decimal("1.0")
-        if self.config.sg_sizing_enabled:
-            buy_multiplier = self._compute_sg_size_multiplier(
-                side="buy",
-                mid_price=order_book.mid_price,
-                sg_value=sg_value,
-                slope=slope,
-                concavity=concavity,
-            )
-            buy_quote_size = self._round_btc_size(quote_size * buy_multiplier)
-            sell_multiplier = self._compute_sg_size_multiplier(
-                side="sell",
-                mid_price=ask_price,
-                sg_value=sg_value,
-                slope=slope,
-                concavity=concavity,
-            )
-            sell_quote_size = self._round_btc_size(quote_size * sell_multiplier)
+        buy_multiplier = self._compute_unified_size_multiplier(
+            side="buy",
+            ask_price=ask_price,
+            market_price=order_book.mid_price,
+            twap_slope_bps_per_min=twap_slope_bps_per_min,
+            concavity=concavity,
+        )
+        buy_quote_size = self._round_btc_size(quote_size * buy_multiplier)
+        sell_multiplier = self._compute_unified_size_multiplier(
+            side="sell",
+            ask_price=ask_price,
+            market_price=order_book.mid_price,
+            twap_slope_bps_per_min=twap_slope_bps_per_min,
+            concavity=concavity,
+        )
+        sell_quote_size = self._round_btc_size(quote_size * sell_multiplier)
 
         intents: list[OrderIntent] = []
         remaining_inventory = max_inventory - position_btc
@@ -225,14 +222,24 @@ class MarketMakingStrategy:
                     )
                 )
             else:
-                _log.info(
-                    "sg_buy_suppressed",
-                    multiplier=str(buy_multiplier),
-                    base_quote_size=str(quote_size),
-                    buy_quote_size=str(buy_quote_size),
-                    current_position=str(position_btc),
-                    max_inventory=str(max_inventory),
-                )
+                if buy_multiplier == Decimal("0"):
+                    _log.info(
+                        "unified_buy_suppressed",
+                        multiplier=str(buy_multiplier),
+                        base_quote_size=str(quote_size),
+                        buy_quote_size=str(buy_quote_size),
+                        current_position=str(position_btc),
+                        max_inventory=str(max_inventory),
+                    )
+                else:
+                    _log.info(
+                        "buy_suppressed_zero_size",
+                        multiplier=str(buy_multiplier),
+                        base_quote_size=str(quote_size),
+                        buy_quote_size=str(buy_quote_size),
+                        current_position=str(position_btc),
+                        max_inventory=str(max_inventory),
+                    )
         elif "buy" in quoteable_sides:
             _log.info(
                 "buy_suppressed_max_inventory",
@@ -244,18 +251,27 @@ class MarketMakingStrategy:
         if "sell" in quoteable_sides:
             if current_position_qty <= Decimal("0"):
                 _log.info(
-                    "sg_sell_suppressed",
+                    "sell_suppressed",
                     reason="zero_position",
                     current_position_qty=str(current_position_qty),
                 )
             elif sell_quote_size <= Decimal("0"):
-                _log.info(
-                    "sg_sell_suppressed",
-                    reason="zero_multiplier",
-                    multiplier=str(sell_multiplier),
-                    base_quote_size=str(quote_size),
-                    sell_quote_size=str(sell_quote_size),
-                )
+                if sell_multiplier == Decimal("0"):
+                    _log.info(
+                        "unified_sell_suppressed",
+                        reason="wrong_side_of_ask",
+                        multiplier=str(sell_multiplier),
+                        base_quote_size=str(quote_size),
+                        sell_quote_size=str(sell_quote_size),
+                    )
+                else:
+                    _log.info(
+                        "sell_suppressed_zero_size",
+                        reason="zero_multiplier",
+                        multiplier=str(sell_multiplier),
+                        base_quote_size=str(quote_size),
+                        sell_quote_size=str(sell_quote_size),
+                    )
             else:
                 uncapped_sell_size = sell_quote_size
                 sell_quote_size = min(sell_quote_size, current_position_qty)
@@ -297,74 +313,94 @@ class MarketMakingStrategy:
 
         return intents
 
-    def _compute_sg_size_multiplier(
+    def _compute_unified_size_multiplier(
         self,
         side: str,
-        mid_price: Decimal,
-        sg_value: Decimal | None,
-        slope: float | None,
+        ask_price: Decimal,
+        market_price: Decimal,
+        twap_slope_bps_per_min: float | None,
         concavity: float | None,
     ) -> Decimal:
-        """Returns a SG-driven size multiplier for buy or sell side."""
-        if not self.config.sg_sizing_enabled:
+        if not self.config.unified_sizing_enabled:
             return Decimal("1.0")
 
-        if sg_value is None or slope is None or concavity is None or sg_value == Decimal("0"):
+        if ask_price == Decimal("0"):
             return Decimal("1.0")
 
         if side == "buy":
-            distance_bps = ((sg_value - mid_price) / sg_value) * Decimal("10000")
+            distance_bps = ((ask_price - market_price) / ask_price) * Decimal("10000")
         elif side == "sell":
-            distance_bps = ((mid_price - sg_value) / sg_value) * Decimal("10000")
+            distance_bps = ((market_price - ask_price) / ask_price) * Decimal("10000")
         else:
             return Decimal("1.0")
 
-        if distance_bps < Decimal("0"):
-            distance_bps = Decimal("0")
+        if distance_bps <= Decimal("0"):
+            return Decimal("0.0")
 
-        if slope < self.config.sg_slope_steep_threshold:
-            slope_zone = "steep"
-        elif slope > self.config.sg_slope_rising_threshold:
-            slope_zone = "rising"
-        else:
-            slope_zone = "flat"
-
-        near = Decimal(str(self.config.sg_distance_near_bps))
-        far = Decimal(str(self.config.sg_distance_far_bps))
+        near = Decimal(str(self.config.ask_sg_near_bps))
+        far = Decimal(str(self.config.ask_sg_far_bps))
         if distance_bps < near:
             distance_zone = "near"
-        elif distance_bps <= far:
+        elif distance_bps < far:
             distance_zone = "mid"
         else:
             distance_zone = "far"
 
+        slope_value = twap_slope_bps_per_min
+        if slope_value is None:
+            twap_slope_zone = "neutral"
+        elif slope_value < self.config.twap_slope_steep_threshold:
+            twap_slope_zone = "steep_falling"
+        elif slope_value < self.config.twap_slope_mild_threshold:
+            twap_slope_zone = "mild_falling"
+        elif slope_value <= self.config.twap_slope_rising_threshold:
+            twap_slope_zone = "neutral"
+        elif slope_value <= self.config.twap_slope_steep_rising_threshold:
+            twap_slope_zone = "mild_rising"
+        else:
+            twap_slope_zone = "steep_rising"
+
         if side == "buy":
             matrix: dict[tuple[str, str], Decimal] = {
-                ("near", "steep"): Decimal("0.0"),
-                ("near", "flat"): Decimal("0.10"),
-                ("near", "rising"): Decimal("0.25"),
-                ("mid", "steep"): Decimal("0.10"),
-                ("mid", "flat"): Decimal("0.50"),
-                ("mid", "rising"): Decimal("0.75"),
-                ("far", "steep"): Decimal("0.25"),
-                ("far", "flat"): Decimal("1.00"),
-                ("far", "rising"): Decimal("1.50"),
+                ("steep_falling", "near"): Decimal("0.10"),
+                ("steep_falling", "mid"): Decimal("0.25"),
+                ("steep_falling", "far"): Decimal("0.50"),
+                ("mild_falling", "near"): Decimal("0.25"),
+                ("mild_falling", "mid"): Decimal("0.50"),
+                ("mild_falling", "far"): Decimal("0.75"),
+                ("neutral", "near"): Decimal("0.50"),
+                ("neutral", "mid"): Decimal("1.00"),
+                ("neutral", "far"): Decimal("1.50"),
+                ("mild_rising", "near"): Decimal("0.75"),
+                ("mild_rising", "mid"): Decimal("1.25"),
+                ("mild_rising", "far"): Decimal("1.50"),
+                ("steep_rising", "near"): Decimal("0.75"),
+                ("steep_rising", "mid"): Decimal("1.25"),
+                ("steep_rising", "far"): Decimal("1.50"),
             }
         else:
             matrix = {
-                ("near", "steep"): Decimal("0.25"),
-                ("near", "flat"): Decimal("0.10"),
-                ("near", "rising"): Decimal("0.0"),
-                ("mid", "steep"): Decimal("0.75"),
-                ("mid", "flat"): Decimal("0.50"),
-                ("mid", "rising"): Decimal("0.10"),
-                ("far", "steep"): Decimal("1.50"),
-                ("far", "flat"): Decimal("1.00"),
-                ("far", "rising"): Decimal("0.25"),
+                ("steep_falling", "near"): Decimal("0.50"),
+                ("steep_falling", "mid"): Decimal("1.25"),
+                ("steep_falling", "far"): Decimal("1.50"),
+                ("mild_falling", "near"): Decimal("0.25"),
+                ("mild_falling", "mid"): Decimal("1.00"),
+                ("mild_falling", "far"): Decimal("1.25"),
+                ("neutral", "near"): Decimal("0.50"),
+                ("neutral", "mid"): Decimal("1.00"),
+                ("neutral", "far"): Decimal("1.50"),
+                ("mild_rising", "near"): Decimal("0.25"),
+                ("mild_rising", "mid"): Decimal("0.50"),
+                ("mild_rising", "far"): Decimal("0.75"),
+                ("steep_rising", "near"): Decimal("0.10"),
+                ("steep_rising", "mid"): Decimal("0.25"),
+                ("steep_rising", "far"): Decimal("0.50"),
             }
-        base_multiplier = matrix[(distance_zone, slope_zone)]
+        base_multiplier = matrix[(twap_slope_zone, distance_zone)]
 
-        if concavity > self.config.sg_concavity_threshold:
+        if concavity is None:
+            concavity_modifier = Decimal("1.00")
+        elif concavity > self.config.sg_concavity_threshold:
             concavity_modifier = Decimal("1.25")
         elif concavity < -self.config.sg_concavity_threshold:
             concavity_modifier = Decimal("0.50")
@@ -373,13 +409,12 @@ class MarketMakingStrategy:
 
         final_multiplier = base_multiplier * concavity_modifier
         _log.info(
-            "sg_sizing_applied",
+            "unified_sizing_applied",
             side=side,
-            slope=slope,
-            concavity=concavity,
             distance_bps=str(distance_bps.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
-            slope_zone=slope_zone,
             distance_zone=distance_zone,
+            twap_slope_bps_per_min=twap_slope_bps_per_min,
+            twap_slope_zone=twap_slope_zone,
             base_multiplier=str(base_multiplier),
             concavity_modifier=str(concavity_modifier),
             final_multiplier=str(final_multiplier),

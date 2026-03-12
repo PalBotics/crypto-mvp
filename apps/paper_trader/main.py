@@ -354,7 +354,11 @@ class PaperTradingLoop:
             symbol=strategy.config.symbol,
             account_name=self._market_making_config.account_name,
         )
-        sg_value, slope, concavity = self._latest_sg_snapshot(
+        concavity = self._latest_concavity_snapshot(
+            exchange=strategy.config.exchange,
+            symbol=strategy.config.symbol,
+        )
+        twap_slope_bps_per_min = self._compute_twap_slope(
             exchange=strategy.config.exchange,
             symbol=strategy.config.symbol,
         )
@@ -383,8 +387,7 @@ class PaperTradingLoop:
             account_value=account_value_for_limits,
             avg_entry_price=avg_entry_price,
             allowed_sides=allowed_sides,
-            sg_value=sg_value,
-            slope=slope,
+            twap_slope_bps_per_min=twap_slope_bps_per_min,
             concavity=concavity,
         )
 
@@ -585,16 +588,16 @@ class PaperTradingLoop:
             return None
         return Decimal(str(latest.avg_entry_price))
 
-    def _latest_sg_snapshot(
+    def _latest_concavity_snapshot(
         self,
         exchange: str,
         symbol: str,
-    ) -> tuple[Decimal | None, float | None, float | None]:
+    ) -> float | None:
         try:
             import numpy as np
             from scipy.signal import savgol_filter
         except Exception:
-            return None, None, None
+            return None
 
         lookback_hours = max(2, int(self._market_making_config.twap_lookback_hours if self._market_making_config is not None else 2))
         cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
@@ -613,24 +616,51 @@ class PaperTradingLoop:
 
         mids = np.array([float(s.mid_price) for s in snapshots], dtype=float)
         if mids.size < 3:
-            return None, None, None
+            return None
 
         window = min(DEFAULT_SG_WINDOW, int(mids.size))
         if window % 2 == 0:
             window -= 1
         degree = min(DEFAULT_SG_DEGREE, window - 1)
         if window < 3 or degree < 1 or degree >= window:
-            return None, None, None
+            return None
 
-        sg_values = savgol_filter(mids, window_length=window, polyorder=degree, deriv=0)
-        slope_values = savgol_filter(mids, window_length=window, polyorder=degree, deriv=1)
         concavity_values = savgol_filter(mids, window_length=window, polyorder=degree, deriv=2)
+        return float(concavity_values[-1])
 
-        return (
-            Decimal(str(sg_values[-1])),
-            float(slope_values[-1]),
-            float(concavity_values[-1]),
+    def _compute_twap_slope(
+        self,
+        exchange: str,
+        symbol: str,
+    ) -> float | None:
+        snapshots = (
+            self._session.execute(
+                select(OrderBookSnapshot)
+                .where(OrderBookSnapshot.exchange == exchange)
+                .where(OrderBookSnapshot.symbol == symbol)
+                .where(OrderBookSnapshot.mid_price.is_not(None))
+                .order_by(OrderBookSnapshot.event_ts.desc())
+                .limit(10)
+            )
+            .scalars()
+            .all()
         )
+        if len(snapshots) < 2:
+            return None
+
+        newest = snapshots[0]
+        oldest = snapshots[-1]
+        newest_mid = Decimal(str(newest.mid_price))
+        oldest_mid = Decimal(str(oldest.mid_price))
+        if oldest_mid == Decimal("0"):
+            return None
+
+        elapsed_minutes = (newest.event_ts - oldest.event_ts).total_seconds() / 60.0
+        if elapsed_minutes <= 0:
+            return None
+
+        slope_bps_per_min = ((newest_mid - oldest_mid) / oldest_mid) * Decimal("10000")
+        return float(slope_bps_per_min / Decimal(str(elapsed_minutes)))
 
     def _latest_twap_snapshot(
         self,
@@ -695,21 +725,26 @@ def main() -> None:
     mm_fee_bps = float(_mm_fee_bps) if _mm_fee_bps is not None else None
     _mm_target_profit_bps = os.environ.get("MM_TARGET_PROFIT_BPS")
     mm_target_profit_bps = float(_mm_target_profit_bps) if _mm_target_profit_bps is not None else None
+    _mm_bid_offset_bps = os.environ.get("MM_BID_OFFSET_BPS")
+    mm_bid_offset_bps = float(_mm_bid_offset_bps) if _mm_bid_offset_bps is not None else None
     _min_spread = os.environ.get("MM_MIN_SPREAD_BPS")
     min_spread_bps = Decimal(_min_spread) if _min_spread is not None else None
     _twap = os.environ.get("MM_TWAP_LOOKBACK_HOURS")
     twap_lookback_hours = int(_twap) if _twap is not None else None
-    _sg_enabled = os.environ.get("SG_SIZING_ENABLED")
-    sg_sizing_enabled = _sg_enabled is not None and _sg_enabled.strip().lower() in {"1", "true", "yes", "on"}
-
-    _sg_slope_steep = os.environ.get("SG_SLOPE_STEEP_THRESHOLD")
-    sg_slope_steep_threshold = float(_sg_slope_steep) if _sg_slope_steep is not None else None
-    _sg_slope_rising = os.environ.get("SG_SLOPE_RISING_THRESHOLD")
-    sg_slope_rising_threshold = float(_sg_slope_rising) if _sg_slope_rising is not None else None
-    _sg_distance_near = os.environ.get("SG_DISTANCE_NEAR_BPS")
-    sg_distance_near_bps = float(_sg_distance_near) if _sg_distance_near is not None else None
-    _sg_distance_far = os.environ.get("SG_DISTANCE_FAR_BPS")
-    sg_distance_far_bps = float(_sg_distance_far) if _sg_distance_far is not None else None
+    _unified_enabled = os.environ.get("UNIFIED_SIZING_ENABLED")
+    unified_sizing_enabled = _unified_enabled is not None and _unified_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    _ask_sg_near = os.environ.get("ASK_SG_NEAR_BPS")
+    ask_sg_near_bps = float(_ask_sg_near) if _ask_sg_near is not None else None
+    _ask_sg_far = os.environ.get("ASK_SG_FAR_BPS")
+    ask_sg_far_bps = float(_ask_sg_far) if _ask_sg_far is not None else None
+    _twap_slope_mild = os.environ.get("TWAP_SLOPE_MILD_THRESHOLD")
+    twap_slope_mild_threshold = float(_twap_slope_mild) if _twap_slope_mild is not None else None
+    _twap_slope_steep = os.environ.get("TWAP_SLOPE_STEEP_THRESHOLD")
+    twap_slope_steep_threshold = float(_twap_slope_steep) if _twap_slope_steep is not None else None
+    _twap_slope_rising = os.environ.get("TWAP_SLOPE_RISING_THRESHOLD")
+    twap_slope_rising_threshold = float(_twap_slope_rising) if _twap_slope_rising is not None else None
+    _twap_slope_steep_rising = os.environ.get("TWAP_SLOPE_STEEP_RISING_THRESHOLD")
+    twap_slope_steep_rising_threshold = float(_twap_slope_steep_rising) if _twap_slope_steep_rising is not None else None
     _sg_concavity = os.environ.get("SG_CONCAVITY_THRESHOLD")
     sg_concavity_threshold = float(_sg_concavity) if _sg_concavity is not None else None
 
@@ -732,21 +767,27 @@ def main() -> None:
         mm_kwargs["mm_fee_bps"] = mm_fee_bps
     if mm_target_profit_bps is not None:
         mm_kwargs["mm_target_profit_bps"] = mm_target_profit_bps
+    if mm_bid_offset_bps is not None:
+        mm_kwargs["bid_offset_bps"] = mm_bid_offset_bps
     if min_spread_bps is not None:
         mm_kwargs["min_spread_bps"] = min_spread_bps
     if stale_book_seconds is not None:
         mm_kwargs["stale_book_seconds"] = stale_book_seconds
     if twap_lookback_hours is not None:
         mm_kwargs["twap_lookback_hours"] = twap_lookback_hours
-    mm_kwargs["sg_sizing_enabled"] = sg_sizing_enabled
-    if sg_slope_steep_threshold is not None:
-        mm_kwargs["sg_slope_steep_threshold"] = sg_slope_steep_threshold
-    if sg_slope_rising_threshold is not None:
-        mm_kwargs["sg_slope_rising_threshold"] = sg_slope_rising_threshold
-    if sg_distance_near_bps is not None:
-        mm_kwargs["sg_distance_near_bps"] = sg_distance_near_bps
-    if sg_distance_far_bps is not None:
-        mm_kwargs["sg_distance_far_bps"] = sg_distance_far_bps
+    mm_kwargs["unified_sizing_enabled"] = unified_sizing_enabled
+    if ask_sg_near_bps is not None:
+        mm_kwargs["ask_sg_near_bps"] = ask_sg_near_bps
+    if ask_sg_far_bps is not None:
+        mm_kwargs["ask_sg_far_bps"] = ask_sg_far_bps
+    if twap_slope_mild_threshold is not None:
+        mm_kwargs["twap_slope_mild_threshold"] = twap_slope_mild_threshold
+    if twap_slope_steep_threshold is not None:
+        mm_kwargs["twap_slope_steep_threshold"] = twap_slope_steep_threshold
+    if twap_slope_rising_threshold is not None:
+        mm_kwargs["twap_slope_rising_threshold"] = twap_slope_rising_threshold
+    if twap_slope_steep_rising_threshold is not None:
+        mm_kwargs["twap_slope_steep_rising_threshold"] = twap_slope_steep_rising_threshold
     if sg_concavity_threshold is not None:
         mm_kwargs["sg_concavity_threshold"] = sg_concavity_threshold
 
