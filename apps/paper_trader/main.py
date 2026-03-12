@@ -368,13 +368,19 @@ class PaperTradingLoop:
             exchange=strategy.config.exchange,
             symbol=strategy.config.symbol,
         )
+        account_value_for_limits = account_snapshot.account_value
+        if snapshot.mid_price is not None:
+            account_value_for_limits = (
+                account_snapshot.cash_value
+                + (current_position * Decimal(str(snapshot.mid_price)))
+            )
         intents = strategy.evaluate(
             self._session,
             snapshot,
             current_position,
             current_ts,
             twap=twap,
-            account_value=account_snapshot.account_value,
+            account_value=account_value_for_limits,
             avg_entry_price=avg_entry_price,
             allowed_sides=allowed_sides,
             sg_value=sg_value,

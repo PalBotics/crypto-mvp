@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -209,6 +209,10 @@ class MarketMakingStrategy:
             sell_quote_size = self._round_btc_size(quote_size * sell_multiplier)
 
         intents: list[OrderIntent] = []
+        remaining_inventory = max_inventory - position_btc
+        max_buy_size = self._floor_btc_size(remaining_inventory) if remaining_inventory > Decimal("0") else Decimal("0")
+        if buy_quote_size > max_buy_size:
+            buy_quote_size = max_buy_size
 
         if "buy" in quoteable_sides and position_btc < max_inventory:
             if buy_quote_size > Decimal("0"):
@@ -226,6 +230,8 @@ class MarketMakingStrategy:
                     multiplier=str(buy_multiplier),
                     base_quote_size=str(quote_size),
                     buy_quote_size=str(buy_quote_size),
+                    current_position=str(position_btc),
+                    max_inventory=str(max_inventory),
                 )
         elif "buy" in quoteable_sides:
             _log.info(
@@ -414,6 +420,10 @@ class MarketMakingStrategy:
     @staticmethod
     def _round_btc_size(size: Decimal) -> Decimal:
         return size.quantize(BTC_QUANT, rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def _floor_btc_size(size: Decimal) -> Decimal:
+        return size.quantize(BTC_QUANT, rounding=ROUND_DOWN)
 
     def _build_intent(
         self,

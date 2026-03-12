@@ -416,6 +416,71 @@ def test_pct_sizing_falls_back_to_fixed_when_account_value_missing() -> None:
     assert intents[0].quantity == Decimal("0.001")
 
 
+def test_max_inventory_cap_prevents_buy_at_limit() -> None:
+    config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        quote_size_pct=Decimal("10"),
+        max_inventory_pct=Decimal("75"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0.01250000"),
+        current_ts=datetime.now(timezone.utc),
+        account_value=Decimal("1000"),
+    )
+
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+
+
+def test_max_inventory_cap_uses_current_account_value() -> None:
+    config = MarketMakingConfig(
+        exchange="kraken",
+        symbol="XBTUSD",
+        account_name="paper_mm",
+        spread_bps=Decimal("20"),
+        quote_size=Decimal("0.001"),
+        max_inventory=Decimal("0.01"),
+        quote_size_pct=Decimal("10"),
+        max_inventory_pct=Decimal("75"),
+        min_spread_bps=Decimal("5"),
+        stale_book_seconds=120,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+
+    intents_low_value = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0.01240000"),
+        current_ts=datetime.now(timezone.utc),
+        account_value=Decimal("1000"),
+    )
+    intents_high_value = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0.01240000"),
+        current_ts=datetime.now(timezone.utc),
+        account_value=Decimal("1200"),
+    )
+
+    low_buy = next(i for i in intents_low_value if i.side == "buy")
+    high_buy = next(i for i in intents_high_value if i.side == "buy")
+    assert low_buy.quantity == Decimal("0.00010000")
+    assert high_buy.quantity == Decimal("0.00200000")
+
+
 def test_sg_sizing_disabled_returns_base_size() -> None:
     config = MarketMakingConfig(
         exchange="kraken",
