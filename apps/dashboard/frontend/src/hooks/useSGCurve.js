@@ -1,9 +1,13 @@
 import useApi from './useApi'
 
-export default function useSGCurve(hours = 2, window = 25, degree = 2) {
+export default function useSGCurve(hours = 2, window = 25, degree = 2, before = null, poll = true) {
+  const url = before
+    ? `/api/sg-curve?hours=${hours}&window=${window}&degree=${degree}&before=${encodeURIComponent(before)}`
+    : `/api/sg-curve?hours=${hours}&window=${window}&degree=${degree}`
+
   const { data, loading, error, lastUpdated, refetch } = useApi(
-    `/api/sg-curve?hours=${hours}&window=${window}&degree=${degree}`,
-    { interval: 30000 }
+    url,
+    { interval: poll ? 10000 : 0 }
   )
 
   return {

@@ -21,6 +21,12 @@ class PositionSchema(BaseModel):
     quantity: str
     avg_entry_price: str
     snapshot_ts: datetime
+    side: str | None = None
+    position_type: str | None = None
+    contract_qty: int | None = None
+    contract_size: str | None = None
+    mark_price: str | None = None
+    margin_posted: str | None = None
 
     @classmethod
     def from_row(cls, row: object) -> "PositionSchema":
@@ -31,6 +37,12 @@ class PositionSchema(BaseModel):
             quantity=str(row.quantity),  # type: ignore[attr-defined]
             avg_entry_price=str(row.avg_entry_price),  # type: ignore[attr-defined]
             snapshot_ts=row.snapshot_ts,  # type: ignore[attr-defined]
+            side=row.side,  # type: ignore[attr-defined]
+            position_type=row.position_type,  # type: ignore[attr-defined]
+            contract_qty=row.contract_qty,  # type: ignore[attr-defined]
+            contract_size=str(row.contract_size) if row.contract_size else None,  # type: ignore[attr-defined]
+            mark_price=str(row.mark_price) if row.mark_price else None,  # type: ignore[attr-defined]
+            margin_posted=str(row.margin_posted) if row.margin_posted else None,  # type: ignore[attr-defined]
         )
 
 
@@ -40,6 +52,7 @@ class PnLSummarySchema(BaseModel):
     total_realized_pnl: str
     total_unrealized_pnl: str
     total_funding_paid: str
+    total_accrued_not_yet_settled: str
     net_pnl: str
 
     @classmethod
@@ -48,6 +61,7 @@ class PnLSummarySchema(BaseModel):
             total_realized_pnl=str(row.total_realized_pnl),  # type: ignore[attr-defined]
             total_unrealized_pnl=str(row.total_unrealized_pnl),  # type: ignore[attr-defined]
             total_funding_paid=str(row.total_funding_paid),  # type: ignore[attr-defined]
+            total_accrued_not_yet_settled=str(row.total_accrued_not_yet_settled),  # type: ignore[attr-defined]
             net_pnl=str(row.net_pnl),  # type: ignore[attr-defined]
         )
 
@@ -199,4 +213,32 @@ class FundingRateSchema(BaseModel):
             mark_price=None if row.mark_price is None else str(row.mark_price),  # type: ignore[attr-defined]
             next_funding_ts=row.next_funding_ts,  # type: ignore[attr-defined]
             event_ts=row.event_ts,  # type: ignore[attr-defined]
+        )
+
+
+class HedgeStatusSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    spot_notional: str
+    perp_notional: str
+    hedge_ratio: str
+    spot_qty: str
+    perp_qty: str
+    mark_price: str
+    is_balanced: bool
+    funding_rate_apr: str = "0"
+    daily_funding_accrued_usd: str = "0"
+
+    @classmethod
+    def from_hedge_status(cls, hs: object) -> "HedgeStatusSchema":
+        return cls(
+            spot_notional=str(hs.spot_notional),  # type: ignore[attr-defined]
+            perp_notional=str(hs.perp_notional),  # type: ignore[attr-defined]
+            hedge_ratio=str(hs.hedge_ratio),  # type: ignore[attr-defined]
+            spot_qty=str(hs.spot_qty),  # type: ignore[attr-defined]
+            perp_qty=str(hs.perp_qty),  # type: ignore[attr-defined]
+            mark_price=str(hs.mark_price),  # type: ignore[attr-defined]
+            is_balanced=hs.is_balanced,  # type: ignore[attr-defined]
+            funding_rate_apr=str(hs.funding_rate_apr),  # type: ignore[attr-defined]
+            daily_funding_accrued_usd=str(hs.daily_funding_accrued_usd),  # type: ignore[attr-defined]
         )

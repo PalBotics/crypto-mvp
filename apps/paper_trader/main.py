@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import threading
 import time
 
 from dotenv import load_dotenv
@@ -692,11 +693,12 @@ class PaperTradingLoop:
 def main() -> None:
     """CLI entry point for the paper trading loop."""
     from core.app import bootstrap_app
-    from core.db.session import get_db_session
+    from core.db.session import SessionLocal, get_db_session
     from core.paper.fees import FixedBpsFeeModel
     from core.risk.engine import RiskConfig
     from core.strategy.funding_capture import FundingCaptureConfig
     from core.strategy.market_making import MarketMakingConfig
+    from apps.strategy_engine.delta_neutral_runner import DeltaNeutralRunner
 
     load_dotenv()
 
@@ -820,6 +822,24 @@ def main() -> None:
         loop_interval_seconds = int(os.environ.get("LOOP_INTERVAL_SECONDS", "60"))
         running = True
         iteration = 0
+        dn_stop_event = threading.Event()
+        dn_runner = DeltaNeutralRunner(
+            session_factory=SessionLocal,
+            settings=ctx.settings,
+        )
+        dn_thread = threading.Thread(
+            target=dn_runner.run_forever,
+            args=(dn_stop_event,),
+            daemon=True,
+            name="delta-neutral-runner",
+        )
+
+        ctx.logger.info(
+            "service_starting",
+            strategy="delta_neutral",
+            account="paper_dn",
+        )
+        dn_thread.start()
 
         def _handle_sigterm(signum, _frame) -> None:  # type: ignore[no-untyped-def]
             nonlocal running
@@ -854,6 +874,8 @@ def main() -> None:
         except KeyboardInterrupt:
             ctx.logger.info("paper_trader_keyboard_interrupt_received")
         finally:
+            dn_stop_event.set()
+            dn_thread.join(timeout=5)
             session.close()
     else:
         try:

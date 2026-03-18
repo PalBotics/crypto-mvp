@@ -1,9 +1,13 @@
 import useApi from './useApi'
 
-export function useTicks(symbol = 'XBTUSD', limit = 120) {
+export function useTicks(symbol = 'XBTUSD', limit = 120, before = null, poll = true) {
+  const url = before
+    ? '/api/market/ticks?symbol=' + symbol + '&limit=' + limit + '&before=' + encodeURIComponent(before)
+    : '/api/market/ticks?symbol=' + symbol + '&limit=' + limit
+
   const { data, loading, error, lastUpdated, refetch } = useApi(
-    '/api/market/ticks?symbol=' + symbol + '&limit=' + limit,
-    { interval: 10000 }
+    url,
+    { interval: poll ? 10000 : 0 }
   )
 
   return {
@@ -15,10 +19,14 @@ export function useTicks(symbol = 'XBTUSD', limit = 120) {
   }
 }
 
-export function useOrderBooks(symbol = 'XBTUSD', limit = 20) {
+export function useOrderBooks(symbol = 'XBTUSD', limit = 20, before = null, poll = true) {
+  const url = before
+    ? '/api/market/order-books?symbol=' + symbol + '&limit=' + limit + '&before=' + encodeURIComponent(before)
+    : '/api/market/order-books?symbol=' + symbol + '&limit=' + limit
+
   const { data, loading, error, lastUpdated, refetch } = useApi(
-    '/api/market/order-books?symbol=' + symbol + '&limit=' + limit,
-    { interval: 10000 }
+    url,
+    { interval: poll ? 10000 : 0 }
   )
 
   return {

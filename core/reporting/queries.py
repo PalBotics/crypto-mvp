@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.models.fill_record import FillRecord
+from core.models.funding_accrual import FundingAccrual
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.funding_payment import FundingPayment
 from core.models.market_tick import MarketTick
@@ -38,6 +39,12 @@ class PositionRow:
     quantity: Decimal
     avg_entry_price: Decimal
     snapshot_ts: datetime
+    side: str | None = None
+    position_type: str | None = None
+    contract_qty: int | None = None
+    contract_size: Decimal | None = None
+    mark_price: Decimal | None = None
+    margin_posted: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +52,7 @@ class PnLSummaryRow:
     total_realized_pnl: Decimal
     total_unrealized_pnl: Decimal
     total_funding_paid: Decimal
+    total_accrued_not_yet_settled: Decimal
     net_pnl: Decimal
 
 
@@ -138,16 +146,23 @@ def get_open_positions(session: Session, account_name: str) -> list[PositionRow]
             quantity=_to_decimal(row.quantity),
             avg_entry_price=_to_decimal(row.avg_entry_price),
             snapshot_ts=row.snapshot_ts,
+            side=row.side,
+            position_type=row.position_type,
+            contract_qty=row.contract_qty,
+            contract_size=_to_decimal(row.contract_size) if row.contract_size else None,
+            mark_price=_to_decimal(row.mark_price) if row.mark_price else None,
+            margin_posted=_to_decimal(row.margin_posted) if row.margin_posted else None,
         )
         for row in rows
     ]
 
 
 def get_pnl_summary(session: Session, account_name: str) -> PnLSummaryRow:
-    """Aggregate realized PnL, unrealized PnL, and funding paid for an account.
+    """Aggregate realized PnL, unrealized PnL, funding paid, and unsettled accruals.
 
     PnLSnapshot is keyed by strategy_name (== account_name / run_id).
     FundingPayment is keyed by account_name.
+    FundingAccrual is keyed by account_name.
     """
     realized = _to_decimal(
         session.execute(
@@ -170,11 +185,21 @@ def get_pnl_summary(session: Session, account_name: str) -> PnLSummaryRow:
             )
         ).scalar_one()
     )
-    net = realized + unrealized + funding_paid
+    accrued_not_settled = _to_decimal(
+        session.execute(
+            select(func.sum(FundingAccrual.accrual_usd)).where(
+                FundingAccrual.account_name == account_name
+            ).where(
+                FundingAccrual.settled == False
+            )
+        ).scalar_one()
+    )
+    net = realized + unrealized + funding_paid + accrued_not_settled
     return PnLSummaryRow(
         total_realized_pnl=realized,
         total_unrealized_pnl=unrealized,
         total_funding_paid=funding_paid,
+        total_accrued_not_yet_settled=accrued_not_settled,
         net_pnl=net,
     )
 
@@ -270,15 +295,37 @@ def get_run_summary(session: Session, account_name: str) -> RunSummaryRow:
 
 
 def get_recent_ticks(
-    session: Session, symbol: str, limit: int = 120
+    session: Session,
+    symbol: str | None,
+    limit: int = 120,
+    before: datetime | None = None,
 ) -> list[MarketTickRow]:
-    stmt = (
-        select(MarketTick)
-        .where(MarketTick.symbol == symbol)
-        .order_by(MarketTick.event_ts.desc())
-        .limit(limit)
-    )
-    rows = session.execute(stmt).scalars().all()
+    if symbol is None:
+        # All-symbol mode: return the newest row per exchange/symbol so one
+        # high-frequency feed does not starve other feeds out of a small limit.
+        scan_limit = max(limit * 50, 500)
+        stmt = select(MarketTick)
+        if before is not None:
+            stmt = stmt.where(MarketTick.event_ts < before)
+        stmt = stmt.order_by(MarketTick.event_ts.desc()).limit(scan_limit)
+        scanned_rows = session.execute(stmt).scalars().all()
+
+        seen: set[tuple[str, str]] = set()
+        rows: list[MarketTick] = []
+        for row in scanned_rows:
+            key = (row.exchange, row.symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+    else:
+        stmt = select(MarketTick).where(MarketTick.symbol == symbol)
+        if before is not None:
+            stmt = stmt.where(MarketTick.event_ts < before)
+        stmt = stmt.order_by(MarketTick.event_ts.desc()).limit(limit)
+        rows = session.execute(stmt).scalars().all()
     return [
         MarketTickRow(
             exchange=row.exchange,
@@ -294,14 +341,16 @@ def get_recent_ticks(
 
 
 def get_recent_order_books(
-    session: Session, symbol: str, limit: int = 20
+    session: Session,
+    symbol: str,
+    limit: int = 20,
+    before: datetime | None = None,
 ) -> list[OrderBookRow]:
-    stmt = (
-        select(OrderBookSnapshot)
-        .where(OrderBookSnapshot.symbol == symbol)
-        .order_by(OrderBookSnapshot.event_ts.desc())
-        .limit(limit)
-    )
+    stmt = select(OrderBookSnapshot).where(OrderBookSnapshot.symbol == symbol)
+    if before is not None:
+        stmt = stmt.where(OrderBookSnapshot.event_ts < before)
+
+    stmt = stmt.order_by(OrderBookSnapshot.event_ts.desc()).limit(limit)
     rows = session.execute(stmt).scalars().all()
     return [
         OrderBookRow(
@@ -321,15 +370,33 @@ def get_recent_order_books(
 
 
 def get_recent_funding_rates(
-    session: Session, symbol: str, limit: int = 48
+    session: Session, symbol: str | None, limit: int = 48
 ) -> list[FundingRateRow]:
-    stmt = (
-        select(FundingRateSnapshot)
-        .where(FundingRateSnapshot.symbol == symbol)
-        .order_by(FundingRateSnapshot.event_ts.desc())
-        .limit(limit)
-    )
-    rows = session.execute(stmt).scalars().all()
+    if symbol is None:
+        # All-symbol mode: return the newest row per exchange/symbol so one
+        # feed cannot dominate short result windows.
+        scan_limit = max(limit * 50, 500)
+        stmt = select(FundingRateSnapshot).order_by(FundingRateSnapshot.event_ts.desc()).limit(scan_limit)
+        scanned_rows = session.execute(stmt).scalars().all()
+
+        seen: set[tuple[str, str]] = set()
+        rows: list[FundingRateSnapshot] = []
+        for row in scanned_rows:
+            key = (row.exchange, row.symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+    else:
+        stmt = (
+            select(FundingRateSnapshot)
+            .where(FundingRateSnapshot.symbol == symbol)
+            .order_by(FundingRateSnapshot.event_ts.desc())
+            .limit(limit)
+        )
+        rows = session.execute(stmt).scalars().all()
     return [
         FundingRateRow(
             exchange=row.exchange,

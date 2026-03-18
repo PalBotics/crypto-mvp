@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import useHealth from '../hooks/useHealth'
 import useRunSummary from '../hooks/useRunSummary'
 import LoadingState, { ErrorState } from '../components/common/Loading'
@@ -16,10 +17,45 @@ function InfoRow({ label, value, valueClassName = 'font-mono text-xs text-text-p
 export default function Settings() {
   const health = useHealth()
   const summary = useRunSummary()
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetSuccess, setResetSuccess] = useState('')
+  const [resetError, setResetError] = useState('')
 
   const apiStatus = health.data?.status ?? '—'
   const apiStatusClass =
     health.data?.status === 'ok' ? 'text-green font-mono text-xs' : 'text-red font-mono text-xs'
+
+  async function handleResetPaperTrader() {
+    const confirmed = window.confirm(
+      'Are you sure? This will permanently delete all fills, positions, and risk events for paper_mm. This cannot be undone.'
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setResetLoading(true)
+    setResetSuccess('')
+    setResetError('')
+
+    try {
+      const response = await fetch('/api/runs/paper_mm/reset', {
+        method: 'POST',
+      })
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(body.detail ?? 'Reset failed')
+      }
+
+      setResetSuccess('Reset complete. All trading history cleared.')
+      summary.refetch()
+      health.refetch()
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setResetLoading(false)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -61,6 +97,29 @@ export default function Settings() {
         <InfoRow label="Backend" value="http://localhost:8000" />
         <InfoRow label="Frontend" value="Vite + React + Tailwind + Recharts" />
         <InfoRow label="Dashboard" value="crypto-mvp dashboard" />
+      </div>
+
+      <div className="card p-4 flex flex-col gap-3 border border-red/50 bg-red/10">
+        <span className="label text-red">Danger Zone</span>
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-xs text-text-primary">Reset Paper Trader</span>
+          <span className="font-mono text-xs text-text-secondary">
+            Clears all fills, positions, and risk events for the paper_mm account. Deposits are
+            preserved. This cannot be undone.
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleResetPaperTrader}
+            disabled={resetLoading}
+            className="px-3 py-1 rounded-sm text-xs font-mono border border-red/60 text-red bg-red/20 hover:bg-red/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {resetLoading ? 'Resetting...' : 'Reset'}
+          </button>
+          {resetSuccess && <span className="text-green font-mono text-xs">{resetSuccess}</span>}
+          {resetError && <span className="text-red font-mono text-xs">{resetError}</span>}
+        </div>
       </div>
     </div>
   )

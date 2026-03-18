@@ -11,9 +11,9 @@ from core.models.position_snapshot import PositionSnapshot
 
 def _signed_qty(side: str, qty: Decimal) -> Decimal:
     side_normalized = side.strip().lower()
-    if side_normalized == "buy":
+    if side_normalized in {"buy", "long"}:
         return qty
-    if side_normalized == "sell":
+    if side_normalized in {"sell", "short"}:
         return -qty
     raise ValueError(f"Unsupported fill side for position tracking: {side}")
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -22,6 +22,7 @@ const HOUR_OPTIONS = [1, 2, 4, 8, 24]
 const SG_WINDOW_OPTIONS = [15, 25, 35, 51]
 const SG_DEGREE_OPTIONS = [2, 3, 4]
 const MATCH_WINDOW_MS = 90 * 1000
+const MAX_SCROLL_MINUTES = 7 * 24 * 60
 
 function toPrice(value) {
   const parsed = parseFloat(value)
@@ -88,6 +89,9 @@ function OrderEventLabel({ viewBox, marker, tooltip }) {
 
 export default function MarketRangePanel() {
   const [hours, setHours] = useState(2)
+  const [scrollOffset, setScrollOffset] = useState(0)
+  const [previewOffset, setPreviewOffset] = useState(0)
+  const [isDragging, setIsDragging] = useState(false)
   const [twapWindow, setTwapWindow] = useState(2)
   const [sgWindow, setSgWindow] = useState(25)
   const [sgDegree, setSgDegree] = useState(2)
@@ -101,9 +105,20 @@ export default function MarketRangePanel() {
     twap: true,
   })
   const [twapSaveError, setTwapSaveError] = useState('')
-  const marketRange = useMarketRange(hours)
-  const quoteHistory = useQuoteHistory(hours)
-  const sgCurve = useSGCurve(hours, sgWindow, sgDegree)
+  const chartContainerRef = useRef(null)
+  const dragStartXRef = useRef(0)
+  const dragStartOffsetRef = useRef(0)
+  const [chartWidthPx, setChartWidthPx] = useState(0)
+
+  const isHistorical = scrollOffset > 0
+  const effectiveOffset = isDragging ? previewOffset : scrollOffset
+  const windowMinutes = hours * 60
+  const stepMinutes = Math.max(1, Math.floor(windowMinutes / 4))
+  const before = isHistorical ? new Date(Date.now() - (scrollOffset * 60 * 1000)).toISOString() : null
+
+  const marketRange = useMarketRange(hours, before, !isHistorical)
+  const quoteHistory = useQuoteHistory(hours, before, !isHistorical)
+  const sgCurve = useSGCurve(hours, sgWindow, sgDegree, before, !isHistorical)
 
   useEffect(() => {
     let mounted = true
@@ -150,6 +165,89 @@ export default function MarketRangePanel() {
   }
 
   const toggleLine = (key) => setVisible((v) => ({ ...v, [key]: !v[key] }))
+
+  const clampOffset = (value) => {
+    if (value <= 0) return 0
+    if (value >= MAX_SCROLL_MINUTES) return MAX_SCROLL_MINUTES
+    return value
+  }
+
+  const shiftBy = (deltaMinutes) => {
+    setScrollOffset((prev) => clampOffset(prev + deltaMinutes))
+  }
+
+  const onDragStart = (event) => {
+    if (event.button !== 0) {
+      return
+    }
+    const container = chartContainerRef.current
+    if (!container) {
+      return
+    }
+    event.preventDefault()
+    const width = container.clientWidth || 0
+    setChartWidthPx(width)
+    dragStartXRef.current = event.clientX
+    dragStartOffsetRef.current = scrollOffset
+    setPreviewOffset(scrollOffset)
+    setIsDragging(true)
+  }
+
+  const onDragMove = (event) => {
+    if (!isDragging) {
+      return
+    }
+    const container = chartContainerRef.current
+    if (!container) {
+      return
+    }
+    const width = container.clientWidth || 1
+    setChartWidthPx(width)
+    const deltaPx = event.clientX - dragStartXRef.current
+    const minutesPerPixel = windowMinutes / width
+    const deltaMinutes = deltaPx * minutesPerPixel
+    const nextPreview = dragStartOffsetRef.current - deltaMinutes
+    setPreviewOffset(clampOffset(Math.round(nextPreview)))
+  }
+
+  const commitDrag = () => {
+    if (!isDragging) {
+      return
+    }
+    setScrollOffset(clampOffset(previewOffset))
+    setIsDragging(false)
+  }
+
+  const onDragEnd = () => {
+    commitDrag()
+  }
+
+  const onDragLeave = () => {
+    commitDrag()
+  }
+
+  const rangeLabel = useMemo(() => {
+    if (effectiveOffset <= 0) {
+      return null
+    }
+    const end = new Date(Date.now() - (effectiveOffset * 60 * 1000))
+    const start = new Date(end.getTime() - (hours * 60 * 60 * 1000))
+    const dateText = end.toLocaleDateString([], {
+      month: 'short',
+      day: 'numeric',
+    })
+    const startTime = start.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    const endTime = end.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    return `Viewing ${dateText}, ${startTime} - ${endTime}`
+  }, [effectiveOffset, hours])
 
   const marketRangeData = useMemo(() => {
     return (marketRange.data?.snapshots ?? [])
@@ -240,6 +338,8 @@ export default function MarketRangePanel() {
       }
     })
   }, [marketRangeData, quoteHistoryData, sgCurveData])
+
+  const noEarlierData = isHistorical && mergedChartData.length < Math.max(8, hours * 4)
 
   const mappedOrderEvents = useMemo(() => {
     if (mergedChartData.length === 0) {
@@ -341,6 +441,19 @@ export default function MarketRangePanel() {
         </div>
       </div>
 
+      {isHistorical && rangeLabel && (
+        <div className="flex items-center gap-3 text-[10px] font-mono text-yellow">
+          <span>{rangeLabel}</span>
+          <button
+            type="button"
+            onClick={() => setScrollOffset(0)}
+            className="text-[10px] font-mono text-yellow hover:underline"
+          >
+            {'▶ Back to Live'}
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <span className="label">SG Curve</span>
         <div className="flex items-center gap-1.5">
@@ -422,8 +535,47 @@ export default function MarketRangePanel() {
             </div>
           </div>
 
-          <div className="h-64">
-            <div className="label mb-2">Price, TWAP & Quotes</div>
+          <div
+            ref={chartContainerRef}
+            className={`h-64 relative ${isHistorical ? 'rounded-sm p-2' : ''}`}
+            style={{
+              border: isHistorical ? '1px solid #f59e0b' : '1px solid transparent',
+              cursor: isDragging ? 'grabbing' : 'grab',
+            }}
+            onMouseDown={onDragStart}
+            onMouseMove={onDragMove}
+            onMouseUp={onDragEnd}
+            onMouseLeave={onDragLeave}
+          >
+            {isHistorical && (
+              <span className="absolute right-2 top-2 text-[10px] font-mono text-yellow z-10">
+                HISTORICAL
+              </span>
+            )}
+            <div className="label mb-2 flex items-center justify-between">
+              <span>Price, TWAP & Quotes</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => shiftBy(stepMinutes)}
+                  className="px-2 py-1 rounded-sm text-[10px] font-mono border border-border text-text-secondary hover:text-text-primary"
+                  aria-label="View older data"
+                >
+                  {'<-'}
+                </button>
+                <span className="text-[10px] font-mono text-text-secondary">
+                  {isHistorical ? `${effectiveOffset}m ago` : 'LIVE'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => shiftBy(-stepMinutes)}
+                  className="px-2 py-1 rounded-sm text-[10px] font-mono border border-border text-text-secondary hover:text-text-primary"
+                  aria-label="View newer data"
+                >
+                  {'->'}
+                </button>
+              </div>
+            </div>
             <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px] font-mono text-text-secondary">
               <button
                 type="button"
@@ -569,6 +721,11 @@ export default function MarketRangePanel() {
                   <Line yAxisId="signal" dataKey="concavity" stroke="#06b6d4" strokeWidth={1} strokeDasharray="4 2" dot={false} name="Concavity" hide={!visible.concavity} />
                 </ComposedChart>
               </ResponsiveContainer>
+            )}
+            {noEarlierData && (
+              <div className="absolute left-2 top-8 text-[10px] font-mono text-yellow bg-bg/80 px-2 py-1 rounded-sm border border-yellow/30">
+                No earlier data
+              </div>
             )}
           </div>
         </>

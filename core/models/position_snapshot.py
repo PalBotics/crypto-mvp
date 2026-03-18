@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Numeric, String
+from sqlalchemy import DateTime, Integer, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,10 +20,15 @@ class PositionSnapshot(Base):
 
     instrument_type: Mapped[str] = mapped_column(String(20), nullable=False)
     side: Mapped[str] = mapped_column(String(20), nullable=False)
+    position_type: Mapped[str] = mapped_column(String(20), nullable=False, default="spot")
 
     quantity: Mapped[float] = mapped_column(Numeric(28, 10), nullable=False)
     avg_entry_price: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
     mark_price: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+
+    contract_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contract_size: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
+    margin_posted: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
 
     unrealized_pnl: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)
     realized_pnl: Mapped[float | None] = mapped_column(Numeric(28, 10), nullable=True)

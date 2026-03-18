@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from apps.collector.kraken_rest import CollectorConfig, CollectorError, KrakenRestAdapter
+from core.exchange.coinbase_advanced import CoinbaseAdvancedAdapter
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
 from core.models.order_book_snapshot import OrderBookSnapshot
@@ -24,10 +25,12 @@ class CollectorLoop:
         self,
         config: CollectorConfig,
         adapter: KrakenRestAdapter,
+        coinbase_adapter: CoinbaseAdvancedAdapter | None,
         session_factory: Callable[[], Session],
     ) -> None:
         self._config = config
         self._adapter = adapter
+        self._coinbase_adapter = coinbase_adapter
         self._session_factory = session_factory
         self._running = True
 
@@ -119,6 +122,50 @@ class CollectorLoop:
                 session.add(order_book_snapshot)
                 inserted_order_book += 1
 
+            coinbase_tick: MarketTick | None = None
+            coinbase_funding_snapshot: FundingRateSnapshot | None = None
+            inserted_coinbase_ticks = 0
+            inserted_coinbase_funding = 0
+
+            if self._coinbase_adapter is not None and self._coinbase_adapter.is_enabled:
+                coinbase_tick = self._coinbase_adapter.get_ticker(symbol="ETH-PERP")
+                coinbase_funding_snapshot = self._coinbase_adapter.get_funding_rate(
+                    symbol="ETH-PERP"
+                )
+
+                if coinbase_tick is None or coinbase_funding_snapshot is None:
+                    _log.warning(
+                        "coinbase_data_missing",
+                        exchange="coinbase_advanced",
+                        symbol="ETH-PERP",
+                        has_tick=coinbase_tick is not None,
+                        has_funding=coinbase_funding_snapshot is not None,
+                    )
+
+                if coinbase_tick is not None:
+                    exists_coinbase_tick = session.execute(
+                        select(MarketTick).where(
+                            MarketTick.exchange == coinbase_tick.exchange,
+                            MarketTick.symbol == coinbase_tick.symbol,
+                            MarketTick.event_ts == coinbase_tick.event_ts,
+                        )
+                    ).first()
+                    if exists_coinbase_tick is None:
+                        session.add(coinbase_tick)
+                        inserted_coinbase_ticks += 1
+
+                if coinbase_funding_snapshot is not None:
+                    exists_coinbase_funding = session.execute(
+                        select(FundingRateSnapshot).where(
+                            FundingRateSnapshot.exchange == coinbase_funding_snapshot.exchange,
+                            FundingRateSnapshot.symbol == coinbase_funding_snapshot.symbol,
+                            FundingRateSnapshot.event_ts == coinbase_funding_snapshot.event_ts,
+                        )
+                    ).first()
+                    if exists_coinbase_funding is None:
+                        session.add(coinbase_funding_snapshot)
+                        inserted_coinbase_funding += 1
+
             session.commit()
 
             _log.info(
@@ -134,6 +181,8 @@ class CollectorLoop:
                 inserted_market_ticks=inserted_ticks,
                 inserted_funding_snapshots=inserted_funding,
                 inserted_order_book_snapshots=inserted_order_book,
+                inserted_coinbase_market_ticks=inserted_coinbase_ticks,
+                inserted_coinbase_funding_snapshots=inserted_coinbase_funding,
                 cycle_ts=datetime.now(timezone.utc).isoformat(),
             )
         except Exception as exc:

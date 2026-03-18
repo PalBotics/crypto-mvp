@@ -37,12 +37,35 @@ class Settings(BaseSettings):
     db_password: str = Field(default="postgres", alias="DB_PASSWORD")
     db_echo: bool = Field(default=False, alias="DB_ECHO")
 
+    coinbase_api_key: str = Field(default="", alias="COINBASE_API_KEY")
+    coinbase_private_key: str = Field(default="", alias="COINBASE_PRIVATE_KEY")
+
+    dn_funding_entry_threshold_apr: float = Field(
+        default=5.0,
+        alias="DN_FUNDING_ENTRY_THRESHOLD_APR",
+    )
+    dn_funding_exit_threshold_apr: float = Field(
+        default=2.0,
+        alias="DN_FUNDING_EXIT_THRESHOLD_APR",
+    )
+    dn_contract_qty: int = Field(default=8, alias="DN_CONTRACT_QTY")
+    dn_iteration_seconds: int = Field(default=60, alias="DN_ITERATION_SECONDS")
+    dn_force_entry: bool = Field(default=False, alias="DN_FORCE_ENTRY")
+    dn_spot_exchange: str = Field(default="kraken", alias="DN_SPOT_EXCHANGE")
+    dn_spot_symbol: str = Field(default="ETHUSD", alias="DN_SPOT_SYMBOL")
+    dn_perp_exchange: str = Field(default="coinbase_advanced", alias="DN_PERP_EXCHANGE")
+    dn_perp_symbol: str = Field(default="ETH-PERP", alias="DN_PERP_SYMBOL")
+
     @property
     def database_url(self) -> str:
         return (
             f"postgresql+psycopg://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
+
+    @property
+    def coinbase_private_key_pem(self) -> str:
+        return self.coinbase_private_key.replace("\\n", "\n")
 
 
 @lru_cache(maxsize=1)

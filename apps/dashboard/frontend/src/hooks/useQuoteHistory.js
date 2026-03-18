@@ -1,9 +1,13 @@
 import useApi from './useApi'
 
-export default function useQuoteHistory(hours = 8) {
+export default function useQuoteHistory(hours = 8, before = null, poll = true) {
+  const url = before
+    ? `/api/quote-history?hours=${hours}&before=${encodeURIComponent(before)}`
+    : `/api/quote-history?hours=${hours}`
+
   const { data, loading, error, lastUpdated, refetch } = useApi(
-    '/api/quote-history?hours=' + hours,
-    { interval: 30000 }
+    url,
+    { interval: poll ? 10000 : 0 }
   )
 
   return {

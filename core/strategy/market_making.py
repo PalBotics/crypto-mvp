@@ -203,7 +203,13 @@ class MarketMakingStrategy:
             twap_slope_bps_per_min=twap_slope_bps_per_min,
             concavity=concavity,
         )
-        sell_quote_size = self._round_btc_size(quote_size * sell_multiplier)
+        # Keep a resting sell quote present even when market is below ask.
+        if sell_multiplier <= Decimal("0"):
+            sell_quote_size = quote_size
+        else:
+            sell_quote_size = self._round_btc_size(quote_size * sell_multiplier)
+            if sell_quote_size <= Decimal("0"):
+                sell_quote_size = quote_size
 
         intents: list[OrderIntent] = []
         remaining_inventory = max_inventory - position_btc
@@ -255,23 +261,6 @@ class MarketMakingStrategy:
                     reason="zero_position",
                     current_position_qty=str(current_position_qty),
                 )
-            elif sell_quote_size <= Decimal("0"):
-                if sell_multiplier == Decimal("0"):
-                    _log.info(
-                        "unified_sell_suppressed",
-                        reason="wrong_side_of_ask",
-                        multiplier=str(sell_multiplier),
-                        base_quote_size=str(quote_size),
-                        sell_quote_size=str(sell_quote_size),
-                    )
-                else:
-                    _log.info(
-                        "sell_suppressed_zero_size",
-                        reason="zero_multiplier",
-                        multiplier=str(sell_multiplier),
-                        base_quote_size=str(quote_size),
-                        sell_quote_size=str(sell_quote_size),
-                    )
             else:
                 uncapped_sell_size = sell_quote_size
                 sell_quote_size = min(sell_quote_size, current_position_qty)

@@ -17,16 +17,22 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from scipy.signal import savgol_filter
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from core.db.session import SessionLocal
 from core.models.fill_record import FillRecord
+from core.models.funding_rate_snapshot import FundingRateSnapshot
+from core.models.market_tick import MarketTick
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.order_intent import OrderIntent
 from core.models.order_record import OrderRecord
 from core.models.paper_deposit import PaperDeposit
+from core.models.pnl_snapshot import PnLSnapshot
+from core.models.position_snapshot import PositionSnapshot
 from core.models.quote_snapshot import QuoteSnapshot
+from core.models.risk_event import RiskEvent
+from core.paper.hedge_ratio import compute_hedge_ratio
 from core.reporting.queries import (
     get_recent_funding_rates,
     get_open_positions,
@@ -37,11 +43,13 @@ from core.reporting.queries import (
     get_risk_events,
     get_run_summary,
 )
+from core.utils.logging import get_logger
 from core.reporting.account import compute_paper_account_snapshot
 
 from apps.dashboard.schemas import (
     FillSchema,
     FundingRateSchema,
+    HedgeStatusSchema,
     MarketTickSchema,
     OrderBookSchema,
     PnLSummarySchema,
@@ -51,6 +59,7 @@ from apps.dashboard.schemas import (
 )
 
 router = APIRouter()
+_log = get_logger(__name__)
 
 USD_QUANT = Decimal("0.01")
 BPS_QUANT = Decimal("0.0001")
@@ -160,6 +169,12 @@ def pnl_summary(account_name: str, session: SessionDep) -> PnLSummarySchema:
     return PnLSummarySchema.from_row(row)
 
 
+@router.get("/runs/{account_name}/hedge-status", response_model=HedgeStatusSchema)
+def hedge_status(account_name: str, session: SessionDep) -> HedgeStatusSchema:
+    hs = compute_hedge_ratio(account_name, session)
+    return HedgeStatusSchema.from_hedge_status(hs)
+
+
 @router.get("/runs/{account_name}/fills", response_model=list[FillSchema])
 def recent_fills(
     account_name: str,
@@ -180,13 +195,78 @@ def risk_events(
     return [RiskEventSchema.from_row(r) for r in rows]
 
 
+@router.post("/runs/{account_name}/reset")
+def reset_run_history(account_name: str, session: SessionDep) -> dict:
+    intent_ids_subquery = select(OrderIntent.id).where(OrderIntent.mode == account_name)
+    order_record_ids_subquery = select(OrderRecord.id).where(
+        OrderRecord.order_intent_id.in_(intent_ids_subquery)
+    )
+
+    rows_deleted = {
+        "fills": 0,
+        "positions": 0,
+        "risk_events": 0,
+        "pnl_snapshots": 0,
+        "order_records": 0,
+        "order_intents": 0,
+    }
+
+    try:
+        with session.begin():
+            fill_delete_result = session.execute(
+                delete(FillRecord).where(FillRecord.order_record_id.in_(order_record_ids_subquery))
+            )
+            rows_deleted["fills"] = int(fill_delete_result.rowcount or 0)
+
+            order_record_delete_result = session.execute(
+                delete(OrderRecord).where(OrderRecord.id.in_(order_record_ids_subquery))
+            )
+            rows_deleted["order_records"] = int(order_record_delete_result.rowcount or 0)
+
+            order_intent_delete_result = session.execute(
+                delete(OrderIntent).where(OrderIntent.mode == account_name)
+            )
+            rows_deleted["order_intents"] = int(order_intent_delete_result.rowcount or 0)
+
+            position_delete_result = session.execute(
+                delete(PositionSnapshot).where(PositionSnapshot.account_name == account_name)
+            )
+            rows_deleted["positions"] = int(position_delete_result.rowcount or 0)
+
+            risk_delete_result = session.execute(
+                delete(RiskEvent).where(RiskEvent.strategy_name == account_name)
+            )
+            rows_deleted["risk_events"] = int(risk_delete_result.rowcount or 0)
+
+            pnl_delete_result = session.execute(
+                delete(PnLSnapshot).where(PnLSnapshot.strategy_name == account_name)
+            )
+            rows_deleted["pnl_snapshots"] = int(pnl_delete_result.rowcount or 0)
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=f"reset failed: {exc}") from exc
+
+    _log.info(
+        "paper_trader_reset",
+        account_name=account_name,
+        rows_deleted=rows_deleted,
+    )
+
+    return {
+        "success": True,
+        "account_name": account_name,
+        "rows_deleted": rows_deleted,
+    }
+
+
 @router.get("/market/ticks", response_model=list[MarketTickSchema])
 def recent_ticks(
     session: SessionDep,
-    symbol: Annotated[str, Query()] = "XBTUSD",
+    symbol: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 120,
+    before: datetime | None = None,
 ) -> list[MarketTickSchema]:
-    rows = get_recent_ticks(session, symbol, limit=limit)
+    rows = get_recent_ticks(session, symbol, limit=limit, before=before)
     return [MarketTickSchema.from_row(r) for r in rows]
 
 
@@ -195,19 +275,119 @@ def recent_order_books(
     session: SessionDep,
     symbol: Annotated[str, Query()] = "XBTUSD",
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    before: datetime | None = None,
 ) -> list[OrderBookSchema]:
-    rows = get_recent_order_books(session, symbol, limit=limit)
+    rows = get_recent_order_books(session, symbol, limit=limit, before=before)
     return [OrderBookSchema.from_row(r) for r in rows]
 
 
 @router.get("/market/funding", response_model=list[FundingRateSchema])
 def recent_funding_rates(
     session: SessionDep,
-    symbol: Annotated[str, Query()] = "XBTUSD",
+    symbol: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 48,
 ) -> list[FundingRateSchema]:
     rows = get_recent_funding_rates(session, symbol, limit=limit)
     return [FundingRateSchema.from_row(r) for r in rows]
+
+
+@router.get("/market/perp-status")
+def perp_status(session: SessionDep) -> list[dict]:
+    feeds: list[tuple[str, str]] = [
+        ("kraken_futures", "XBTUSD"),
+        ("coinbase_advanced", "ETH-PERP"),
+    ]
+
+    now_utc = datetime.now(timezone.utc)
+    items: list[dict] = []
+
+    for exchange, symbol in feeds:
+        tick = session.execute(
+            select(MarketTick)
+            .where(MarketTick.exchange == exchange, MarketTick.symbol == symbol)
+            .order_by(MarketTick.event_ts.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        funding = session.execute(
+            select(FundingRateSnapshot)
+            .where(
+                FundingRateSnapshot.exchange == exchange,
+                FundingRateSnapshot.symbol == symbol,
+            )
+            .order_by(FundingRateSnapshot.event_ts.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if tick is None and funding is None:
+            continue
+
+        newest_ts = max(
+            [
+                ts
+                for ts in [
+                    tick.event_ts if tick is not None else None,
+                    funding.event_ts if funding is not None else None,
+                ]
+                if ts is not None
+            ]
+        )
+        age_seconds = max(0, int((now_utc - newest_ts).total_seconds()))
+        stale = age_seconds > 120
+
+        funding_rate = (
+            Decimal(str(funding.funding_rate)) if funding is not None else None
+        )
+        funding_interval_hours = (
+            int(funding.funding_interval_hours)
+            if funding is not None and funding.funding_interval_hours
+            else None
+        )
+
+        funding_rate_apr_pct: str | None = None
+        if funding_rate is not None and funding_interval_hours is not None and funding_interval_hours > 0:
+            # Unit normalization note:
+            # - Kraken futures adapter stores raw `fundingRate` from
+            #   /derivatives/api/v3/tickers ("current absolute funding rate").
+            #   In stored snapshots this is already an annualized rate in decimal
+            #   form (for example 0.0062385519 == 0.62385519% APR), so do NOT
+            #   multiply by settlement periods again.
+            # - Coinbase Advanced stores interval funding-rate fractions from
+            #   product `future_product_details[.perpetual_details].funding_rate`
+            #   (typically hourly for INTX perps), so annualize by periods.
+            if exchange == "kraken_futures":
+                apr_pct = funding_rate * Decimal("100")
+            else:
+                periods_per_year = Decimal(str((24 / funding_interval_hours) * 365))
+                apr_pct = funding_rate * periods_per_year * Decimal("100")
+            funding_rate_apr_pct = str(
+                apr_pct.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            )
+
+        items.append(
+            {
+                "exchange": exchange,
+                "symbol": symbol,
+                "mark_price": (
+                    str(funding.mark_price)
+                    if funding is not None and funding.mark_price is not None
+                    else (str(tick.mid_price) if tick is not None else None)
+                ),
+                "bid_price": str(tick.bid_price) if tick is not None else None,
+                "ask_price": str(tick.ask_price) if tick is not None else None,
+                "funding_rate": str(funding.funding_rate) if funding is not None else None,
+                "funding_rate_apr_pct": funding_rate_apr_pct,
+                "predicted_funding_rate": (
+                    str(funding.predicted_funding_rate)
+                    if funding is not None and funding.predicted_funding_rate is not None
+                    else None
+                ),
+                "data_age_seconds": age_seconds,
+                "is_stale": stale,
+            }
+        )
+
+    return items
 
 
 @router.get("/quotes")
@@ -357,11 +537,13 @@ def deposits_list(session: SessionDep) -> dict:
 def market_range(
     session: SessionDep,
     hours: Annotated[int, Query()] = 2,
+    before: datetime | None = None,
 ) -> dict:
     if hours not in ALLOWED_HOURS:
         raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+    window_end = before if before is not None else datetime.now(timezone.utc)
+    cutoff = window_end - timedelta(hours=int(hours))
 
     snapshots = session.execute(
         select(OrderBookSnapshot)
@@ -369,6 +551,7 @@ def market_range(
             OrderBookSnapshot.exchange == "kraken",
             OrderBookSnapshot.symbol == "XBTUSD",
             OrderBookSnapshot.event_ts > cutoff,
+            OrderBookSnapshot.event_ts < window_end,
         )
         .order_by(OrderBookSnapshot.event_ts.asc())
     ).scalars().all()
@@ -412,6 +595,7 @@ def sg_curve(
     hours: Annotated[int, Query()] = 2,
     window: Annotated[int, Query(ge=3)] = 25,
     degree: Annotated[int, Query(ge=1)] = 2,
+    before: datetime | None = None,
 ) -> dict:
     if hours not in ALLOWED_HOURS:
         raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
@@ -423,13 +607,15 @@ def sg_curve(
     if int(degree) >= effective_window:
         raise HTTPException(status_code=422, detail="degree must be less than window")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+    window_end = before if before is not None else datetime.now(timezone.utc)
+    cutoff = window_end - timedelta(hours=int(hours))
     snapshots = session.execute(
         select(OrderBookSnapshot)
         .where(
             OrderBookSnapshot.exchange == "kraken",
             OrderBookSnapshot.symbol == "XBTUSD",
             OrderBookSnapshot.event_ts > cutoff,
+            OrderBookSnapshot.event_ts < window_end,
             OrderBookSnapshot.mid_price.is_not(None),
         )
         .order_by(OrderBookSnapshot.event_ts.asc())
@@ -480,11 +666,13 @@ def sg_curve(
 def quote_history(
     session: SessionDep,
     hours: Annotated[int, Query()] = 8,
+    before: datetime | None = None,
 ) -> dict:
     if hours not in ALLOWED_HOURS:
         raise HTTPException(status_code=422, detail="hours must be one of: 1, 2, 4, 8, 24")
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+    window_end = before if before is not None else datetime.now(timezone.utc)
+    cutoff = window_end - timedelta(hours=int(hours))
     snapshots = session.execute(
         select(QuoteSnapshot)
         .where(
@@ -492,6 +680,7 @@ def quote_history(
             QuoteSnapshot.symbol == "XBTUSD",
             QuoteSnapshot.account_name == "paper_mm",
             QuoteSnapshot.snapshot_ts > cutoff,
+            QuoteSnapshot.snapshot_ts < window_end,
         )
         .order_by(QuoteSnapshot.snapshot_ts.asc())
     ).scalars().all()
@@ -537,6 +726,7 @@ def quote_history(
         .where(
             OrderIntent.mode == "paper_mm",
             OrderIntent.created_ts > cutoff,
+            OrderIntent.created_ts < window_end,
         )
         .order_by(OrderIntent.created_ts.asc())
     ).all()

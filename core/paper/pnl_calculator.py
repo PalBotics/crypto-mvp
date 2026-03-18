@@ -12,9 +12,9 @@ from core.models.position_snapshot import PositionSnapshot
 
 def _signed_qty(side: str, qty: Decimal) -> Decimal:
     side_normalized = side.strip().lower()
-    if side_normalized == "buy":
+    if side_normalized in {"buy", "long"}:
         return qty
-    if side_normalized == "sell":
+    if side_normalized in {"sell", "short"}:
         return -qty
     raise ValueError(f"Unsupported side for PnL accounting: {side}")
 
@@ -64,9 +64,9 @@ def _compute_unrealized_pnl(position_snapshot: PositionSnapshot, mark_price: Dec
 
     avg = Decimal(str(avg_entry))
     side = position_snapshot.side.strip().lower()
-    if side == "buy":
+    if side in {"long", "buy"}:
         return (mark_price - avg) * qty
-    if side == "sell":
+    if side in {"short", "sell"}:
         return (avg - mark_price) * qty
     raise ValueError(f"Unsupported position side for unrealized PnL: {position_snapshot.side}")
 

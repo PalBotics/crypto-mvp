@@ -614,7 +614,7 @@ def test_unified_buy_suppressed_when_market_above_ask() -> None:
     assert intents == []
 
 
-def test_unified_sell_suppressed_when_market_below_ask() -> None:
+def test_sell_quote_generated_when_market_below_ask() -> None:
     config = MarketMakingConfig(unified_sizing_enabled=True)
     strategy = MarketMakingStrategy(config)
     book = _order_book()
@@ -632,7 +632,10 @@ def test_unified_sell_suppressed_when_market_below_ask() -> None:
         concavity=0.0,
     )
 
-    assert intents == []
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+    assert intents[0].limit_price == Decimal("70490.0")
+    assert intents[0].quantity == config.quote_size
 
 
 def test_unified_buy_near_steep_fall_returns_10pct() -> None:
@@ -719,6 +722,33 @@ def test_unified_sell_far_steep_fall_returns_150pct() -> None:
     assert multiplier == Decimal("1.50")
 
 
+def test_sell_quote_uses_unified_size_when_market_above_ask() -> None:
+    config = MarketMakingConfig(
+        quote_size=Decimal("0.001"),
+        unified_sizing_enabled=True,
+    )
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+    book.mid_price = Decimal("61500")
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0.01"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+        twap=Decimal("60000"),
+        avg_entry_price=Decimal("60000"),
+        twap_slope_bps_per_min=-20.0,
+        concavity=0.0,
+    )
+
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+    assert intents[0].limit_price == Decimal("60420.0")
+    assert intents[0].quantity == Decimal("0.00150000")
+
+
 def test_unified_sell_neutral_mid_returns_100pct() -> None:
     strategy = MarketMakingStrategy(MarketMakingConfig(unified_sizing_enabled=True))
 
@@ -731,6 +761,26 @@ def test_unified_sell_neutral_mid_returns_100pct() -> None:
     )
 
     assert multiplier == Decimal("1.00")
+
+
+def test_sell_quote_suppressed_only_when_position_zero() -> None:
+    config = MarketMakingConfig(unified_sizing_enabled=True)
+    strategy = MarketMakingStrategy(config)
+    book = _order_book()
+
+    intents = strategy.evaluate(
+        session=_session_with_twap(twap=Decimal("60000")),
+        order_book=book,
+        current_position=Decimal("0"),
+        current_ts=datetime.now(timezone.utc),
+        allowed_sides={"sell"},
+        twap=Decimal("60000"),
+        avg_entry_price=Decimal("60000"),
+        twap_slope_bps_per_min=10.0,
+        concavity=0.0,
+    )
+
+    assert intents == []
 
 
 def test_unified_concavity_up_multiplies_125pct() -> None:

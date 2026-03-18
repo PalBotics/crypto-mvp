@@ -53,6 +53,10 @@ export default function useApi(url, options = {}) {
 
     void fetchData()
 
+    if (!(interval > 0)) {
+      return undefined
+    }
+
     const timer = setInterval(() => {
       void fetchData()
     }, interval)
