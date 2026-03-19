@@ -20,7 +20,9 @@ from scipy.signal import savgol_filter
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from core.config.settings import get_settings
 from core.db.session import SessionLocal
+from core.models.dn_runner_command import DnRunnerCommand
 from core.models.fill_record import FillRecord
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
@@ -173,6 +175,42 @@ def pnl_summary(account_name: str, session: SessionDep) -> PnLSummarySchema:
 def hedge_status(account_name: str, session: SessionDep) -> HedgeStatusSchema:
     hs = compute_hedge_ratio(account_name, session)
     return HedgeStatusSchema.from_hedge_status(hs)
+
+
+@router.post("/runs/{account_name}/flatten")
+async def flatten_run(account_name: str, session: SessionDep) -> dict:
+    settings = get_settings()
+    if settings.run_mode != "paper":
+        raise HTTPException(status_code=403, detail={"error": "flatten allowed in paper mode only"})
+
+    row = (
+        session.execute(
+            select(DnRunnerCommand).where(DnRunnerCommand.account_name == account_name)
+        )
+        .scalars()
+        .first()
+    )
+    now_utc = datetime.now(timezone.utc)
+
+    if row is None:
+        row = DnRunnerCommand(
+            account_name=account_name,
+            flatten_requested=True,
+            requested_at=now_utc,
+            reason="manual_flatten_api",
+        )
+        session.add(row)
+    else:
+        row.flatten_requested = True
+        row.requested_at = now_utc
+        row.reason = "manual_flatten_api"
+
+    session.commit()
+
+    return {
+        "status": "flatten_requested",
+        "account": account_name,
+    }
 
 
 @router.get("/runs/{account_name}/fills", response_model=list[FillSchema])

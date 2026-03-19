@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     dn_contract_qty: int = Field(default=8, alias="DN_CONTRACT_QTY")
     dn_iteration_seconds: int = Field(default=60, alias="DN_ITERATION_SECONDS")
     dn_force_entry: bool = Field(default=False, alias="DN_FORCE_ENTRY")
+    dn_block_on_ratio_violation: bool = Field(default=True, alias="DN_BLOCK_ON_RATIO_VIOLATION")
+    dn_max_daily_loss_usd: float = Field(default=50.0, alias="DN_MAX_DAILY_LOSS_USD")
     dn_spot_exchange: str = Field(default="kraken", alias="DN_SPOT_EXCHANGE")
     dn_spot_symbol: str = Field(default="ETHUSD", alias="DN_SPOT_SYMBOL")
     dn_perp_exchange: str = Field(default="coinbase_advanced", alias="DN_PERP_EXCHANGE")

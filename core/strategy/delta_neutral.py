@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.models.position_snapshot import PositionSnapshot
+from core.models.risk_event import RiskEvent
 from core.models.strategy_signal import StrategySignal
 from core.utils.logging import get_logger
 
@@ -19,6 +20,7 @@ class DeltaNeutralConfig:
     entry_threshold_apr: Decimal = Decimal("5.0")
     exit_threshold_apr: Decimal = Decimal("2.0")
     force_entry: bool = False
+    block_on_ratio_violation: bool = True
     run_mode: str = "paper"
 
 
@@ -28,6 +30,7 @@ class DeltaNeutralStrategy:
     def __init__(self, config: DeltaNeutralConfig) -> None:
         self._config = config
         self._paused = False
+        self._flattened = False
 
     @property
     def is_paused(self) -> bool:
@@ -35,6 +38,9 @@ class DeltaNeutralStrategy:
 
     def pause(self) -> None:
         self._paused = True
+
+    def set_flattened(self, flattened: bool) -> None:
+        self._flattened = flattened
 
     def evaluate(
         self,
@@ -60,7 +66,52 @@ class DeltaNeutralStrategy:
                     db=db,
                 )
 
+        if self._flattened:
+            _log.warning("dn_strategy_flattened", account_name=account_name)
+            return self._persist_signal(
+                signal_type="BLOCKED",
+                account_name=account_name,
+                funding_rate_apr=funding_rate_apr,
+                mark_price=eth_mark_price,
+                reason_code="flattened",
+                db=db,
+            )
+
         in_position = bool(current_position)
+
+        if (
+            in_position
+            and self._config.block_on_ratio_violation
+            and not bool(hedge_status.get("is_balanced", False))
+        ):
+            ratio = Decimal(str(hedge_status.get("hedge_ratio", 0)))
+            db.add(
+                RiskEvent(
+                    event_type="hedge_ratio_violation",
+                    severity="warning",
+                    strategy_name="delta_neutral",
+                    symbol="ETH-PERP",
+                    rule_name="dn_ratio_violation_block",
+                    details_json={
+                        "account_name": account_name,
+                        "hedge_ratio": str(ratio),
+                    },
+                    created_ts=datetime.now(timezone.utc),
+                )
+            )
+            _log.warning(
+                "hedge_ratio_violation",
+                account_name=account_name,
+                hedge_ratio=str(ratio),
+            )
+            return self._persist_signal(
+                signal_type="BLOCKED",
+                account_name=account_name,
+                funding_rate_apr=funding_rate_apr,
+                mark_price=eth_mark_price,
+                reason_code="hedge_ratio_violation",
+                db=db,
+            )
 
         if not in_position:
             if self._config.force_entry and self._config.run_mode == "paper":

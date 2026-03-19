@@ -826,6 +826,7 @@ def main() -> None:
         dn_runner = DeltaNeutralRunner(
             session_factory=SessionLocal,
             settings=ctx.settings,
+            account_name="paper_dn",
         )
         dn_thread = threading.Thread(
             target=dn_runner.run_forever,

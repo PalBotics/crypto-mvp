@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from core.config.settings import Settings
+from core.models.dn_runner_command import DnRunnerCommand
 from core.models.fill_record import FillRecord
 from core.models.funding_rate_snapshot import FundingRateSnapshot
 from core.models.market_tick import MarketTick
+from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.models.risk_event import RiskEvent
 from core.paper.funding_accrual import FundingAccrualEngine
@@ -33,22 +36,29 @@ class DeltaNeutralRunner:
         *,
         session_factory: sessionmaker,
         settings: Settings,
+        account_name: str = "paper_dn",
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
+        self._account_name = account_name
         self._strategy = DeltaNeutralStrategy(
             DeltaNeutralConfig(
                 entry_threshold_apr=Decimal(str(settings.dn_funding_entry_threshold_apr)),
                 exit_threshold_apr=Decimal(str(settings.dn_funding_exit_threshold_apr)),
                 force_entry=bool(settings.dn_force_entry),
+                block_on_ratio_violation=bool(settings.dn_block_on_ratio_violation),
                 run_mode=settings.run_mode,
             )
         )
         self._last_accrual_ts: datetime | None = None
+        self._flattened = False
+
+    def close(self) -> None:
+        return None
 
     def run_forever(self, stop_event: threading.Event) -> None:
         interval_seconds = int(self._settings.dn_iteration_seconds)
-        account_name = "paper_dn"
+        account_name = self._account_name
         _log.info(
             "service_starting",
             strategy="delta_neutral",
@@ -56,21 +66,74 @@ class DeltaNeutralRunner:
             interval_seconds=interval_seconds,
         )
 
-        while not stop_event.is_set():
-            with self._session_factory() as session:
-                try:
-                    self._run_iteration(session=session, account_name=account_name)
-                    session.commit()
-                except Exception as exc:
-                    session.rollback()
-                    _log.error("dn_iteration_failed", error=str(exc))
+        try:
+            while not stop_event.is_set():
+                with self._session_factory() as session:
+                    try:
+                        self._run_iteration(session=session, account_name=account_name)
+                        session.commit()
+                    except Exception as exc:
+                        session.rollback()
+                        _log.error("dn_iteration_failed", error=str(exc))
 
-            stop_event.wait(interval_seconds)
+                stop_event.wait(interval_seconds)
+        finally:
+            self.close()
 
     def _run_iteration(self, *, session: Session, account_name: str) -> None:
-        mark_price = self._latest_mark_price(session)
-        if mark_price is None:
+        command_row = (
+            session.execute(
+                select(DnRunnerCommand).where(DnRunnerCommand.account_name == account_name)
+            )
+            .scalars()
+            .first()
+        )
+        if command_row is not None and bool(command_row.flatten_requested):
+            reason = command_row.reason or "manual_flatten_api"
+            _log.warning(
+                "dn_flatten_requested_by_api",
+                account_name=account_name,
+                reason=reason,
+            )
+            asyncio.run(self.emergency_flatten(reason=reason))
+            command_row.flatten_requested = False
+            command_row.requested_at = None
+            command_row.reason = None
+            return
+
+        latest_tick = self._latest_perp_tick(session)
+        if latest_tick is None:
             _log.info("dn_iteration_skipped", reason="missing_mark_price")
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        data_age_seconds = max(0, int((now_utc - latest_tick.event_ts).total_seconds()))
+        if data_age_seconds > 120:
+            _log.warning("coinbase_feed_stale", data_age_seconds=data_age_seconds)
+            session.add(
+                RiskEvent(
+                    event_type="stale_feed",
+                    severity="warning",
+                    strategy_name="delta_neutral",
+                    symbol=self._settings.dn_perp_symbol,
+                    rule_name="dn_stale_feed_guard",
+                    details_json={
+                        "account_name": account_name,
+                        "details": "coinbase_advanced/ETH-PERP",
+                        "data_age_seconds": data_age_seconds,
+                    },
+                    created_ts=now_utc,
+                )
+            )
+            return
+
+        mark_price = Decimal(str(latest_tick.mid_price))
+
+        if self._flattened:
+            self._strategy.set_flattened(True)
+            return
+
+        if self._check_daily_loss(session):
             return
 
         latest_funding = self._latest_funding(session)
@@ -277,8 +340,140 @@ class DeltaNeutralRunner:
             accrued_today=str(settled),
         )
 
-    def _latest_mark_price(self, session: Session) -> Decimal | None:
-        tick = (
+    async def emergency_flatten(self, reason: str) -> None:
+        spot_qty = Decimal("0")
+        perp_qty = Decimal("0")
+        perp_closed_successfully = True
+
+        with self._session_factory() as session:
+            try:
+                mark_price = self._latest_mark_price(session) or Decimal("0")
+                perp_qty = self._latest_perp_qty(session=session, account_name=self._account_name)
+                spot_qty = self._latest_spot_qty(session=session, account_name=self._account_name)
+
+                if perp_qty > 0:
+                    try:
+                        close_perp_short(
+                            session=session,
+                            account_name=self._account_name,
+                            exchange=self._settings.dn_perp_exchange,
+                            symbol=self._settings.dn_perp_symbol,
+                            mark_price=mark_price,
+                        )
+                    except Exception as exc:
+                        perp_closed_successfully = False
+                        _log.error("dn_emergency_flatten_perp_failed", reason=reason, error=str(exc))
+
+                if perp_closed_successfully and spot_qty > 0:
+                    self._simulate_spot_fill(
+                        session=session,
+                        account_name=self._account_name,
+                        exchange=self._settings.dn_spot_exchange,
+                        symbol=self._settings.dn_spot_symbol,
+                        side="sell",
+                        qty=spot_qty,
+                        price=mark_price,
+                    )
+
+                session.add(
+                    RiskEvent(
+                        event_type="emergency_flatten",
+                        severity="critical",
+                        strategy_name="delta_neutral",
+                        symbol=self._settings.dn_perp_symbol,
+                        rule_name="dn_emergency_flatten",
+                        details_json={
+                            "account_name": self._account_name,
+                            "reason": reason,
+                            "spot_qty": str(spot_qty),
+                            "perp_qty": str(perp_qty),
+                        },
+                        created_ts=datetime.now(timezone.utc),
+                    )
+                )
+
+                self._flattened = True
+                self._strategy.set_flattened(True)
+
+                _log.critical(
+                    "dn_emergency_flatten_executed",
+                    reason=reason,
+                    spot_qty=str(spot_qty),
+                    perp_qty=str(perp_qty),
+                )
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                self._flattened = True
+                self._strategy.set_flattened(True)
+                _log.error("dn_emergency_flatten_failed", reason=reason, error=str(exc))
+
+    def _check_daily_loss(self, db: Session) -> bool:
+        now_utc = datetime.now(timezone.utc)
+        day_start = datetime(
+            year=now_utc.year,
+            month=now_utc.month,
+            day=now_utc.day,
+            tzinfo=timezone.utc,
+        )
+
+        realized_today = Decimal(
+            str(
+                db.execute(
+                    select(func.coalesce(func.sum(PnLSnapshot.realized_pnl), 0))
+                    .where(PnLSnapshot.strategy_name == self._account_name)
+                    .where(PnLSnapshot.snapshot_ts >= day_start)
+                ).scalar_one()
+            )
+        )
+
+        mark_price = self._latest_mark_price(db)
+        unrealized = Decimal("0")
+        if mark_price is not None:
+            positions = (
+                db.execute(
+                    select(PositionSnapshot)
+                    .where(PositionSnapshot.account_name == self._account_name)
+                    .where(PositionSnapshot.quantity > 0)
+                    .order_by(PositionSnapshot.snapshot_ts.desc())
+                )
+                .scalars()
+                .all()
+            )
+
+            for pos in positions:
+                qty = Decimal(str(pos.quantity or 0))
+                entry_price = Decimal(str(pos.avg_entry_price or 0))
+                side = (pos.side or "").strip().lower()
+
+                if (
+                    pos.exchange == self._settings.dn_spot_exchange
+                    and pos.symbol == self._settings.dn_spot_symbol
+                    and side in {"long", "buy"}
+                ):
+                    unrealized += (mark_price - entry_price) * qty
+                elif (
+                    pos.exchange == self._settings.dn_perp_exchange
+                    and pos.symbol == self._settings.dn_perp_symbol
+                    and side in {"short", "sell"}
+                ):
+                    unrealized += (entry_price - mark_price) * qty
+
+        combined_pnl = realized_today + unrealized
+        max_daily_loss = Decimal(str(self._settings.dn_max_daily_loss_usd))
+        if combined_pnl < (Decimal("-1") * max_daily_loss):
+            _log.error(
+                "dn_max_daily_loss_breached",
+                loss_usd=str(abs(combined_pnl)),
+                max_daily_loss_usd=str(max_daily_loss),
+            )
+            asyncio.run(self.emergency_flatten(reason="max_daily_loss_breached"))
+            return True
+
+        return False
+
+    def _latest_perp_tick(self, session: Session) -> MarketTick | None:
+        return (
             session.execute(
                 select(MarketTick)
                 .where(MarketTick.exchange == self._settings.dn_perp_exchange)
@@ -288,6 +483,9 @@ class DeltaNeutralRunner:
             .scalars()
             .first()
         )
+
+    def _latest_mark_price(self, session: Session) -> Decimal | None:
+        tick = self._latest_perp_tick(session)
         if tick is None:
             return None
         return Decimal(str(tick.mid_price))
@@ -392,6 +590,23 @@ class DeltaNeutralRunner:
                 .where(PositionSnapshot.account_name == account_name)
                 .where(PositionSnapshot.exchange == self._settings.dn_spot_exchange)
                 .where(PositionSnapshot.symbol == self._settings.dn_spot_symbol)
+                .order_by(PositionSnapshot.snapshot_ts.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            return Decimal("0")
+        return Decimal(str(row.quantity or 0))
+
+    def _latest_perp_qty(self, *, session: Session, account_name: str) -> Decimal:
+        row = (
+            session.execute(
+                select(PositionSnapshot)
+                .where(PositionSnapshot.account_name == account_name)
+                .where(PositionSnapshot.exchange == self._settings.dn_perp_exchange)
+                .where(PositionSnapshot.symbol == self._settings.dn_perp_symbol)
+                .where(PositionSnapshot.position_type == "perp")
                 .order_by(PositionSnapshot.snapshot_ts.desc())
             )
             .scalars()

@@ -1,4 +1,5 @@
 from core.models.fill_record import FillRecord
+from core.models.dn_runner_command import DnRunnerCommand
 from core.models.funding_accrual import FundingAccrual
 from core.models.funding_payment import FundingPayment
 from core.models.funding_rate_snapshot import FundingRateSnapshot
@@ -16,6 +17,7 @@ from core.models.system_event import SystemEvent
 
 __all__ = [
     "FillRecord",
+    "DnRunnerCommand",
     "FundingAccrual",
     "FundingPayment",
     "FundingRateSnapshot",

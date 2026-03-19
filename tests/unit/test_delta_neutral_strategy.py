@@ -15,12 +15,13 @@ class _ScalarResult:
         return self._value
 
 
-def _strategy(*, force_entry: bool = False) -> DeltaNeutralStrategy:
+def _strategy(*, force_entry: bool = False, block_on_ratio_violation: bool = True) -> DeltaNeutralStrategy:
     return DeltaNeutralStrategy(
         DeltaNeutralConfig(
             entry_threshold_apr=Decimal("5.0"),
             exit_threshold_apr=Decimal("2.0"),
             force_entry=force_entry,
+            block_on_ratio_violation=block_on_ratio_violation,
             run_mode="paper",
         )
     )
@@ -125,7 +126,7 @@ def test_hold_when_position_open_and_balanced() -> None:
 
 
 def test_rebalance_when_ratio_drifts() -> None:
-    strategy = _strategy()
+    strategy = _strategy(block_on_ratio_violation=False)
     db = Mock()
 
     signal = strategy.evaluate(
