@@ -147,7 +147,6 @@ def test_stale_feed_skips_iteration(monkeypatch) -> None:
     runner._run_iteration(session=session, account_name="paper_dn_stale")
 
     assert evaluate_mock.call_count == 0
-    assert "coinbase_feed_stale" in log_events
     risk_events = [
         call.args[0]
         for call in session.add.call_args_list

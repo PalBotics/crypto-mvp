@@ -22,6 +22,7 @@ from core.paper.hedge_ratio import compute_hedge_ratio
 from core.paper.perp_execution import close_perp_short, open_perp_short
 from core.paper.pnl_calculator import create_pnl_snapshot_from_fill
 from core.paper.position_tracker import update_position_from_fill
+from core.risk.risk_engine import RiskEngine
 from core.strategy.delta_neutral import DeltaNeutralConfig, DeltaNeutralStrategy
 from core.utils.logging import get_logger
 
@@ -52,6 +53,8 @@ class DeltaNeutralRunner:
         )
         self._last_accrual_ts: datetime | None = None
         self._flattened = False
+        with self._session_factory() as db:
+            self.risk_engine = RiskEngine(account_name=account_name, db=db)
 
     def close(self) -> None:
         return None
@@ -81,6 +84,8 @@ class DeltaNeutralRunner:
             self.close()
 
     def _run_iteration(self, *, session: Session, account_name: str) -> None:
+        self.risk_engine.db = session
+
         command_row = (
             session.execute(
                 select(DnRunnerCommand).where(DnRunnerCommand.account_name == account_name)
@@ -99,6 +104,16 @@ class DeltaNeutralRunner:
             command_row.flatten_requested = False
             command_row.requested_at = None
             command_row.reason = None
+            return
+
+        preflight = self.risk_engine.run_preflight(
+            exchanges_to_check=[
+                (self._settings.dn_perp_exchange, self._settings.dn_perp_symbol),
+                (self._settings.dn_spot_exchange, self._settings.dn_spot_symbol),
+            ],
+            proposed_notional_usd=Decimal("0"),
+        )
+        if not preflight.passed:
             return
 
         latest_tick = self._latest_perp_tick(session)
@@ -200,6 +215,21 @@ class DeltaNeutralRunner:
     ) -> None:
         contract_qty = int(self._settings.dn_contract_qty)
         quantity = Decimal(contract_qty) * Decimal("0.10")
+        proposed_notional = quantity * mark_price
+
+        max_notional = self.risk_engine.check_max_notional(
+            account_name=account_name,
+            proposed_additional_usd=proposed_notional,
+        )
+        if not max_notional.passed:
+            return
+
+        max_symbol = self.risk_engine.check_max_symbol_notional(
+            symbol=self._settings.dn_spot_symbol,
+            proposed_additional_usd=proposed_notional,
+        )
+        if not max_symbol.passed:
+            return
 
         perp_ok = False
         spot_ok = False

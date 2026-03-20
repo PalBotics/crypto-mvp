@@ -22,7 +22,8 @@ from core.models.quote_snapshot import QuoteSnapshot
 from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
-from core.risk.engine import RiskEngine
+from core.risk.engine import RiskEngine as LegacyRiskEngine
+from core.risk.risk_engine import RiskEngine as PreflightRiskEngine
 from core.reporting.account import compute_paper_account_snapshot
 from core.strategy.funding_capture import FundingCaptureStrategy
 from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
@@ -84,7 +85,7 @@ class PaperTradingLoop:
         self,
         session: Session,
         strategy: StrategyType,
-        risk_engine: RiskEngine,
+        risk_engine: LegacyRiskEngine,
         fee_model: FeeModel,
         iterations: int,
         market_data: list[tuple[Decimal, Decimal]] | None = None,
@@ -811,7 +812,7 @@ def main() -> None:
     loop = PaperTradingLoop(
         session=session,
         strategy=strategy,
-        risk_engine=RiskEngine(risk_config),
+        risk_engine=LegacyRiskEngine(risk_config),
         fee_model=FixedBpsFeeModel(bps=Decimal("25")),
         iterations=1,
         strategy_mode=paper_strategy,
@@ -819,6 +820,7 @@ def main() -> None:
     )
 
     if paper_strategy == "market_making":
+        mm_risk_engine = PreflightRiskEngine(account_name="paper_mm", db=session)
         loop_interval_seconds = int(os.environ.get("LOOP_INTERVAL_SECONDS", "60"))
         running = True
         iteration = 0
@@ -854,6 +856,20 @@ def main() -> None:
             while running:
                 iteration += 1
                 try:
+                    mm_risk_engine.db = session
+                    mm_preflight = mm_risk_engine.run_preflight(
+                        exchanges_to_check=[("kraken", "XBTUSD")],
+                    )
+                    if not mm_preflight.passed:
+                        ctx.logger.warning(
+                            "paper_mm_iteration_skipped_preflight",
+                            iteration=iteration,
+                            reason=mm_preflight.reason,
+                        )
+                        if running:
+                            time.sleep(loop_interval_seconds)
+                        continue
+
                     signal_result, intents_executed, _payment = loop.run_one_iteration_market_making(
                         n=iteration,
                         funding_rate=Decimal("0"),

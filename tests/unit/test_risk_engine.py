@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from core.models.order_intent import OrderIntent
 from core.models.risk_event import RiskEvent
 from core.risk.engine import RiskCheckResult, RiskConfig, RiskEngine
+from core.risk.risk_engine import RiskEngine as SharedRiskEngine
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,120 @@ def test_failed_check_persists_exactly_one_risk_event() -> None:
     added = session.add.call_args.args[0]
     assert isinstance(added, RiskEvent)
     assert added.rule_name == "kill_switch_active"
+
+
+class _SharedResult:
+    def __init__(self, *, first=None, all_rows=None):
+        self._first = first
+        self._all_rows = all_rows if all_rows is not None else []
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self._first
+
+    def all(self):
+        return self._all_rows
+
+
+def _shared_engine(session: Mock) -> SharedRiskEngine:
+    engine = SharedRiskEngine(account_name="paper_dn", db=session)
+    engine.risk_max_notional_usd = Decimal("5000")
+    engine.risk_max_symbol_notional_usd = Decimal("3000")
+    return engine
+
+
+def test_max_notional_blocks_entry() -> None:
+    session = Mock()
+    pos = Mock(quantity=Decimal("2"), mark_price=Decimal("2400"), avg_entry_price=Decimal("2400"))
+    session.execute.return_value = _SharedResult(all_rows=[pos])
+
+    engine = _shared_engine(session)
+    result = engine.check_max_notional(
+        account_name="paper_dn",
+        proposed_additional_usd=Decimal("300"),
+    )
+
+    assert result.passed is False
+    assert result.reason == "max_notional_exceeded"
+    persisted = [c.args[0] for c in session.add.call_args_list if c.args and isinstance(c.args[0], RiskEvent)]
+    assert any(evt.event_type == "max_notional_exceeded" for evt in persisted)
+
+
+def test_max_notional_passes_under_limit() -> None:
+    session = Mock()
+    pos = Mock(quantity=Decimal("1"), mark_price=Decimal("1000"), avg_entry_price=Decimal("1000"))
+    session.execute.return_value = _SharedResult(all_rows=[pos])
+
+    engine = _shared_engine(session)
+    result = engine.check_max_notional(
+        account_name="paper_dn",
+        proposed_additional_usd=Decimal("500"),
+    )
+
+    assert result.passed is True
+
+
+def test_max_symbol_blocks_entry() -> None:
+    session = Mock()
+    pos = Mock(quantity=Decimal("1"), mark_price=Decimal("2900"), avg_entry_price=Decimal("2900"))
+    session.execute.return_value = _SharedResult(all_rows=[pos])
+
+    engine = _shared_engine(session)
+    result = engine.check_max_symbol_notional(
+        symbol="ETHUSD",
+        proposed_additional_usd=Decimal("200"),
+    )
+
+    assert result.passed is False
+    assert result.reason == "max_symbol_notional_exceeded"
+
+
+def test_stale_data_blocks_iteration() -> None:
+    session = Mock()
+    tick = Mock(event_ts=datetime.now(timezone.utc) - timedelta(seconds=200))
+    session.execute.return_value = _SharedResult(first=tick)
+
+    engine = _shared_engine(session)
+    result = engine.check_data_freshness(exchange="coinbase_advanced", symbol="ETH-PERP")
+
+    assert result.passed is False
+    assert result.reason == "stale_feed"
+    persisted = [c.args[0] for c in session.add.call_args_list if c.args and isinstance(c.args[0], RiskEvent)]
+    assert any(evt.event_type == "stale_feed" for evt in persisted)
+
+
+def test_stale_data_passes_fresh_data() -> None:
+    session = Mock()
+    tick = Mock(event_ts=datetime.now(timezone.utc) - timedelta(seconds=5))
+    session.execute.return_value = _SharedResult(first=tick)
+
+    engine = _shared_engine(session)
+    result = engine.check_data_freshness(exchange="coinbase_advanced", symbol="ETH-PERP")
+
+    assert result.passed is True
+
+
+def test_risk_engine_passes_clean_state() -> None:
+    session = Mock()
+    fresh_tick = Mock(event_ts=datetime.now(timezone.utc) - timedelta(seconds=5))
+    session.execute.side_effect = [
+        _SharedResult(first=fresh_tick),
+        _SharedResult(all_rows=[]),
+        _SharedResult(all_rows=[]),
+    ]
+
+    engine = _shared_engine(session)
+    result = engine.run_preflight(
+        exchanges_to_check=[("coinbase_advanced", "ETH-PERP")],
+        proposed_notional_usd=Decimal("500"),
+        proposed_symbol="ETHUSD",
+    )
+
+    assert result.passed is True
+    persisted = [c.args[0] for c in session.add.call_args_list if c.args and isinstance(c.args[0], RiskEvent)]
+    assert persisted == []
 
 
 # ---------------------------------------------------------------------------

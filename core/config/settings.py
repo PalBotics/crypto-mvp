@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     dn_perp_exchange: str = Field(default="coinbase_advanced", alias="DN_PERP_EXCHANGE")
     dn_perp_symbol: str = Field(default="ETH-PERP", alias="DN_PERP_SYMBOL")
 
+    risk_max_notional_usd: float = Field(default=5000.0, alias="RISK_MAX_NOTIONAL_USD")
+    risk_max_symbol_notional_usd: float = Field(
+        default=3000.0,
+        alias="RISK_MAX_SYMBOL_NOTIONAL_USD",
+    )
+
     @property
     def database_url(self) -> str:
         return (
