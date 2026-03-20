@@ -9,9 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from datetime import datetime, timezone
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from core.models.funding_accrual import FundingAccrual
 from core.models.market_tick import MarketTick
 from core.models.position_snapshot import PositionSnapshot
 from core.utils.logging import get_logger
@@ -143,6 +146,24 @@ def compute_hedge_ratio(account_name: str, db: Session) -> HedgeStatus:
             perp_notional=str(perp_notional),
         )
     
+    # Query funding accruals for today (since midnight UTC)
+    now_utc = datetime.now(timezone.utc)
+    day_start = datetime(
+        year=now_utc.year,
+        month=now_utc.month,
+        day=now_utc.day,
+        tzinfo=timezone.utc,
+    )
+    
+    daily_accrued = (
+        db.execute(
+            select(func.coalesce(func.sum(FundingAccrual.accrual_usd), 0))
+            .where(FundingAccrual.account_name == account_name)
+            .where(FundingAccrual.period_ts >= day_start)
+        ).scalar_one()
+    )
+    daily_funding_accrued = Decimal(str(daily_accrued))
+    
     return HedgeStatus(
         spot_notional=spot_notional,
         perp_notional=perp_notional,
@@ -151,4 +172,5 @@ def compute_hedge_ratio(account_name: str, db: Session) -> HedgeStatus:
         perp_qty=perp_qty,
         mark_price=mark_price,
         is_balanced=is_balanced,
+        daily_funding_accrued_usd=daily_funding_accrued,
     )

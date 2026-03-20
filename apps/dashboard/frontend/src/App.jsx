@@ -1,24 +1,26 @@
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, LineChart, ArrowLeftRight,
-  TrendingUp, HeartPulse, Settings,
+  TrendingUp, Scale, HeartPulse, Settings,
 } from 'lucide-react'
 import Overview     from './views/Overview'
 import MarketData   from './views/MarketData'
 import Fills        from './views/Fills'
 import PnL          from './views/PnL'
+import DeltaNeutral from './views/DeltaNeutral'
 import Health       from './views/Health'
 import SettingsView from './views/Settings'
 import useHealth from './hooks/useHealth'
 import useRunSummary from './hooks/useRunSummary'
 
 const NAV = [
-  { to: '/',         icon: LayoutDashboard, label: 'Overview'    },
-  { to: '/market',   icon: LineChart,       label: 'Market Data' },
-  { to: '/fills',    icon: ArrowLeftRight,  label: 'Fills'       },
-  { to: '/pnl',      icon: TrendingUp,      label: 'PnL'         },
-  { to: '/health',   icon: HeartPulse,      label: 'Health'      },
-  { to: '/settings', icon: Settings,        label: 'Settings'    },
+  { to: '/',              icon: LayoutDashboard, label: 'Overview'       },
+  { to: '/market',        icon: LineChart,       label: 'Market Data'    },
+  { to: '/fills',         icon: ArrowLeftRight,  label: 'Fills'          },
+  { to: '/pnl',           icon: TrendingUp,      label: 'PnL'            },
+  { to: '/delta-neutral', icon: Scale,           label: 'Delta-Neutral'  },
+  { to: '/health',        icon: HeartPulse,      label: 'Health'         },
+  { to: '/settings',      icon: Settings,        label: 'Settings'       },
 ]
 
 function Sidebar() {
@@ -112,12 +114,13 @@ export default function App() {
         <Header />
         <main className="flex-1 overflow-y-auto p-4 min-w-0 animate-fade-in">
           <Routes>
-            <Route path="/"         element={<Overview />}     />
-            <Route path="/market"   element={<MarketData />}   />
-            <Route path="/fills"    element={<Fills />}        />
-            <Route path="/pnl"      element={<PnL />}          />
-            <Route path="/health"   element={<Health />}       />
-            <Route path="/settings" element={<SettingsView />} />
+            <Route path="/"              element={<Overview />}     />
+            <Route path="/market"        element={<MarketData />}   />
+            <Route path="/fills"         element={<Fills />}        />
+            <Route path="/pnl"           element={<PnL />}          />
+            <Route path="/delta-neutral" element={<DeltaNeutral />} />
+            <Route path="/health"        element={<Health />}       />
+            <Route path="/settings"      element={<SettingsView />} />
           </Routes>
         </main>
       </div>
