@@ -22,6 +22,7 @@ from core.paper.hedge_ratio import compute_hedge_ratio
 from core.paper.perp_execution import close_perp_short, open_perp_short
 from core.paper.pnl_calculator import create_pnl_snapshot_from_fill
 from core.paper.position_tracker import update_position_from_fill
+from core.exchange.kraken_live import KrakenLiveAdapter
 from core.risk.risk_engine import (
     RiskEngine,
     is_kill_switch_active,
@@ -74,6 +75,10 @@ class DeltaNeutralRunner:
             account=account_name,
             interval_seconds=interval_seconds,
         )
+
+        with self._session_factory() as startup_session:
+            if not self._validate_startup_configuration(startup_session):
+                return
 
         try:
             while not stop_event.is_set():
@@ -245,6 +250,47 @@ class DeltaNeutralRunner:
         else:
             _log.info("dn_blocked", funding_rate_apr=str(funding_rate_apr))
 
+    def _validate_startup_configuration(self, session: Session) -> bool:
+        live_mode = bool(getattr(self._settings, "live_mode", False))
+        dry_run = bool(getattr(self._settings, "dry_run", False))
+
+        if dry_run and not live_mode:
+            _log.error("dry_run_requires_live_mode", strategy="delta_neutral")
+            return False
+
+        if not live_mode:
+            _log.info("paper_mode_active", strategy="delta_neutral")
+            return True
+
+        if is_kill_switch_active(session):
+            _log.error("live_mode_blocked_by_kill_switch", strategy="delta_neutral")
+            return False
+
+        live_contract_qty = int(getattr(self._settings, "live_dn_contract_qty", 2))
+        _log.warning(
+            "live_mode_enabled",
+            strategy="delta_neutral",
+            exchange="kraken+coinbase_cfm",
+            contract_qty=live_contract_qty,
+        )
+
+        kraken_key = str(getattr(self._settings, "live_kraken_api_key", "") or "").strip()
+        kraken_secret = str(getattr(self._settings, "live_kraken_api_secret", "") or "").strip()
+        coinbase_key = str(getattr(self._settings, "live_coinbase_api_key", "") or "").strip()
+        coinbase_private_key = str(getattr(self._settings, "live_coinbase_private_key", "") or "").strip()
+
+        if not (kraken_key and kraken_secret and coinbase_key and coinbase_private_key):
+            _log.error("live_mode_credentials_missing", strategy="delta_neutral")
+            return False
+
+        kraken_live = KrakenLiveAdapter(api_key=kraken_key, api_secret=kraken_secret)
+        if not kraken_live.validate_credentials():
+            _log.error("live_mode_startup_validation_failed", strategy="delta_neutral")
+            return False
+
+        _log.info("live_mode_startup_validation_passed", strategy="delta_neutral")
+        return True
+
     def _handle_enter(
         self,
         *,
@@ -253,6 +299,15 @@ class DeltaNeutralRunner:
         mark_price: Decimal,
         funding_rate_apr: Decimal,
     ) -> None:
+        if bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False)):
+            _log.info(
+                "dry_run_signal_only",
+                strategy="delta_neutral",
+                signal="ENTER",
+                account_name=account_name,
+            )
+            return
+
         contract_qty = int(self._settings.dn_contract_qty)
         quantity = Decimal(contract_qty) * Decimal("0.10")
         proposed_notional = quantity * mark_price
@@ -317,6 +372,15 @@ class DeltaNeutralRunner:
         )
 
     def _handle_exit(self, *, session: Session, account_name: str, mark_price: Decimal) -> None:
+        if bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False)):
+            _log.info(
+                "dry_run_signal_only",
+                strategy="delta_neutral",
+                signal="EXIT",
+                account_name=account_name,
+            )
+            return
+
         perp_realized = close_perp_short(
             session=session,
             account_name=account_name,
@@ -351,6 +415,15 @@ class DeltaNeutralRunner:
         mark_price: Decimal,
         hedge_status: dict,
     ) -> None:
+        if bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False)):
+            _log.info(
+                "dry_run_signal_only",
+                strategy="delta_neutral",
+                signal="REBALANCE",
+                account_name=account_name,
+            )
+            return
+
         spot_notional = Decimal(str(hedge_status.get("spot_notional", 0)))
         perp_notional = Decimal(str(hedge_status.get("perp_notional", 0)))
         old_ratio = Decimal(str(hedge_status.get("hedge_ratio", 0)))

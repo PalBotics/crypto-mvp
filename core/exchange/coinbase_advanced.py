@@ -247,6 +247,101 @@ class CoinbaseAdvancedAdapter:
             ingested_ts=now_utc,
         )
 
+    def get_public_product(self, product_id: str | None = None) -> dict[str, Any] | None:
+        target_product = (product_id or self._product_id).strip()
+        url = f"{self._base_url}/api/v3/brokerage/market/products/{target_product}"
+
+        try:
+            response = httpx.get(url, timeout=self._timeout_seconds)
+        except httpx.TimeoutException:
+            return None
+        except httpx.HTTPError:
+            return None
+
+        if response.status_code != 200:
+            return None
+
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def get_public_ticker(self, product_id: str | None = None) -> dict[str, Decimal | str] | None:
+        target_product = (product_id or self._product_id).strip()
+        payload = self.get_public_product(product_id=target_product)
+        if payload is None:
+            return None
+
+        bid = self._safe_decimal(payload, ["best_bid"], field_name="best_bid", expected_missing=True)
+        ask = self._safe_decimal(payload, ["best_ask"], field_name="best_ask", expected_missing=True)
+        if bid is None or ask is None:
+            original_product = self._product_id
+            try:
+                self._product_id = target_product
+                top_of_book = self._get_top_of_book_with_retry()
+            finally:
+                self._product_id = original_product
+
+            if top_of_book is not None:
+                bid = top_of_book.get("bid")
+                ask = top_of_book.get("ask")
+
+        last = self._safe_decimal(payload, ["price"], field_name="price", expected_missing=True)
+
+        mark = self._safe_decimal(
+            payload,
+            ["future_product_details", "perpetual_details", "mark_price"],
+            field_name="future_product_details.perpetual_details.mark_price",
+            expected_missing=True,
+        )
+        if mark is None:
+            mark = self._safe_decimal(
+                payload,
+                ["future_product_details", "mark_price"],
+                field_name="future_product_details.mark_price",
+                expected_missing=True,
+            )
+
+        if bid is None or ask is None:
+            return None
+
+        if last is None:
+            last = mark if mark is not None else (bid + ask) / Decimal("2")
+
+        return {
+            "product_id": str(payload.get("product_id") or target_product),
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "mark": mark,
+        }
+
+    def get_public_funding_rate(self, product_id: str | None = None) -> dict[str, Decimal | int] | None:
+        payload = self.get_public_product(product_id=product_id)
+        if payload is None:
+            return None
+
+        funding_rate = self._safe_decimal(
+            payload,
+            ["future_product_details", "perpetual_details", "funding_rate"],
+            field_name="future_product_details.perpetual_details.funding_rate",
+            expected_missing=True,
+        )
+        if funding_rate is None:
+            funding_rate = self._safe_decimal(
+                payload,
+                ["future_product_details", "funding_rate"],
+                field_name="future_product_details.funding_rate",
+                expected_missing=True,
+            )
+        if funding_rate is None:
+            return None
+
+        return {
+            "funding_rate": funding_rate,
+            "funding_interval_hours": 1,
+        }
+
     def _get_product_with_retry(self) -> dict[str, Any] | None:
         attempts = 2
         last_error: Exception | None = None

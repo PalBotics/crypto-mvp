@@ -23,6 +23,7 @@ from core.models.quote_snapshot import QuoteSnapshot
 from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
+from core.exchange.kraken_live import KrakenLiveAdapter
 from core.risk.engine import RiskEngine as LegacyRiskEngine
 from core.risk.risk_engine import (
     RiskEngine as PreflightRiskEngine,
@@ -51,6 +52,129 @@ def _paper_mm_control_gate(*, session: Session, logger, iteration: int) -> bool:
         logger.warning("mm_strategy_disabled_skipping", iteration=iteration)
         return True
     return False
+
+
+def _validate_live_startup(*, settings, session: Session, logger, strategy: str) -> bool:
+    live_mode = bool(getattr(settings, "live_mode", False))
+    dry_run = bool(getattr(settings, "dry_run", False))
+
+    if dry_run and not live_mode:
+        logger.error("dry_run_requires_live_mode", strategy=strategy)
+        return False
+
+    if not live_mode:
+        logger.info("paper_mode_active", strategy=strategy)
+        return True
+
+    if is_kill_switch_active(session):
+        logger.error("live_mode_blocked_by_kill_switch", strategy=strategy)
+        return False
+
+    logger.warning(
+        "live_mode_enabled",
+        strategy=strategy,
+        exchange="kraken+coinbase_cfm",
+        contract_qty=int(getattr(settings, "live_dn_contract_qty", 2)),
+    )
+
+    kraken_key = str(getattr(settings, "live_kraken_api_key", "") or "").strip()
+    kraken_secret = str(getattr(settings, "live_kraken_api_secret", "") or "").strip()
+    coinbase_key = str(getattr(settings, "live_coinbase_api_key", "") or "").strip()
+    coinbase_private_key = str(getattr(settings, "live_coinbase_private_key", "") or "").strip()
+
+    if not (kraken_key and kraken_secret and coinbase_key and coinbase_private_key):
+        logger.error("live_mode_credentials_missing", strategy=strategy)
+        return False
+
+    kraken_live = KrakenLiveAdapter(api_key=kraken_key, api_secret=kraken_secret)
+    if not kraken_live.validate_credentials():
+        logger.error("live_mode_startup_validation_failed", strategy=strategy)
+        return False
+
+    logger.info("live_mode_startup_validation_passed", strategy=strategy)
+    return True
+
+
+def _run_market_making_dry_run(
+    *,
+    loop: PaperTradingLoop,
+    strategy: MarketMakingStrategy,
+    config: MarketMakingConfig,
+    iteration: int,
+    logger,
+) -> None:
+    loop._apply_twap_lookback_override(strategy)
+
+    snapshot = (
+        loop._session.execute(
+            select(OrderBookSnapshot)
+            .where(OrderBookSnapshot.exchange == strategy.config.exchange)
+            .where(OrderBookSnapshot.symbol == strategy.config.symbol)
+            .order_by(OrderBookSnapshot.event_ts.desc())
+        )
+        .scalars()
+        .first()
+    )
+    if snapshot is None:
+        logger.info("dry_run_no_order_book", iteration=iteration)
+        return
+
+    current_ts = datetime.now(timezone.utc)
+    current_position = loop._current_position(
+        exchange=strategy.config.exchange,
+        symbol=strategy.config.symbol,
+        account_name=config.account_name,
+    )
+    avg_entry_price = loop._latest_avg_entry_price(
+        exchange=strategy.config.exchange,
+        symbol=strategy.config.symbol,
+        account_name=config.account_name,
+    )
+    concavity = loop._latest_concavity_snapshot(
+        exchange=strategy.config.exchange,
+        symbol=strategy.config.symbol,
+    )
+    twap_slope_bps_per_min = loop._compute_twap_slope(
+        exchange=strategy.config.exchange,
+        symbol=strategy.config.symbol,
+    )
+    twap = loop._latest_twap_snapshot(
+        exchange=strategy.config.exchange,
+        symbol=strategy.config.symbol,
+    )
+    account_snapshot = compute_paper_account_snapshot(
+        session=loop._session,
+        account_name=config.account_name,
+        exchange=strategy.config.exchange,
+        symbol=strategy.config.symbol,
+    )
+
+    account_value_for_limits = account_snapshot.account_value
+    if snapshot.mid_price is not None:
+        account_value_for_limits = (
+            account_snapshot.cash_value + (current_position * Decimal(str(snapshot.mid_price)))
+        )
+
+    intents = strategy.evaluate(
+        loop._session,
+        snapshot,
+        current_position,
+        current_ts,
+        twap=twap,
+        account_value=account_value_for_limits,
+        avg_entry_price=avg_entry_price,
+        allowed_sides={"buy", "sell"},
+        twap_slope_bps_per_min=twap_slope_bps_per_min,
+        concavity=concavity,
+    )
+    signal = loop._signal_result_for_market_making({intent.side for intent in intents})
+    logger.info(
+        "dry_run_signal_only",
+        strategy="market_making",
+        iteration=iteration,
+        signal=signal,
+        intents_generated=len(intents),
+    )
 
 
 def _optional_decimal_env(name: str) -> Decimal | None:
@@ -837,6 +961,15 @@ def main() -> None:
     )
 
     if paper_strategy == "market_making":
+        if not _validate_live_startup(
+            settings=ctx.settings,
+            session=session,
+            logger=ctx.logger,
+            strategy="market_making",
+        ):
+            session.close()
+            return
+
         mm_risk_engine = PreflightRiskEngine(account_name="paper_mm", db=session)
         loop_interval_seconds = int(os.environ.get("LOOP_INTERVAL_SECONDS", "60"))
         running = True
@@ -919,6 +1052,18 @@ def main() -> None:
                             "paper_mm_iteration_skipped_preflight",
                             iteration=iteration,
                             reason=mm_preflight.reason,
+                        )
+                        if running:
+                            time.sleep(loop_interval_seconds)
+                        continue
+
+                    if bool(getattr(ctx.settings, "live_mode", False)) and bool(getattr(ctx.settings, "dry_run", False)):
+                        _run_market_making_dry_run(
+                            loop=loop,
+                            strategy=strategy,
+                            config=mm_config,
+                            iteration=iteration,
+                            logger=ctx.logger,
                         )
                         if running:
                             time.sleep(loop_interval_seconds)

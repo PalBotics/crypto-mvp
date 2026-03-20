@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     run_mode: str = Field(default="paper", alias="RUN_MODE")
     service_name: str = Field(default="collector", alias="SERVICE_NAME")
+    live_mode: bool = Field(default=False, alias="LIVE_MODE")
+    dry_run: bool = Field(default=False, alias="DRY_RUN")
 
     db_host: str = Field(default="localhost", alias="DB_HOST")
     db_port: int = Field(default=5432, alias="DB_PORT")
@@ -39,6 +41,10 @@ class Settings(BaseSettings):
 
     coinbase_api_key: str = Field(default="", alias="COINBASE_API_KEY")
     coinbase_private_key: str = Field(default="", alias="COINBASE_PRIVATE_KEY")
+    live_kraken_api_key: str = Field(default="", alias="LIVE_KRAKEN_API_KEY")
+    live_kraken_api_secret: str = Field(default="", alias="LIVE_KRAKEN_API_SECRET")
+    live_coinbase_api_key: str = Field(default="", alias="LIVE_COINBASE_API_KEY")
+    live_coinbase_private_key: str = Field(default="", alias="LIVE_COINBASE_PRIVATE_KEY")
 
     dn_funding_entry_threshold_apr: float = Field(
         default=5.0,
@@ -49,6 +55,7 @@ class Settings(BaseSettings):
         alias="DN_FUNDING_EXIT_THRESHOLD_APR",
     )
     dn_contract_qty: int = Field(default=8, alias="DN_CONTRACT_QTY")
+    live_dn_contract_qty: int = Field(default=2, alias="LIVE_DN_CONTRACT_QTY")
     dn_iteration_seconds: int = Field(default=60, alias="DN_ITERATION_SECONDS")
     dn_force_entry: bool = Field(default=False, alias="DN_FORCE_ENTRY")
     dn_block_on_ratio_violation: bool = Field(default=True, alias="DN_BLOCK_ON_RATIO_VIOLATION")
