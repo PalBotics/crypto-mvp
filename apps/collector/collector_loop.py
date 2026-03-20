@@ -63,6 +63,22 @@ class CollectorLoop:
     def _poll_once(self, session: Session) -> None:
         try:
             spot_raw = self._adapter.fetch_spot_ticker()
+            eth_spot_adapter = KrakenRestAdapter(
+                CollectorConfig(
+                    spot_exchange=self._config.spot_exchange,
+                    perp_exchange=self._config.perp_exchange,
+                    spot_symbol="ETHUSD",
+                    perp_symbol=self._config.perp_symbol,
+                    spot_exchange_symbol="ETHUSD",
+                    perp_exchange_symbol=self._config.perp_exchange_symbol,
+                    adapter_name=self._config.adapter_name,
+                    poll_interval_seconds=self._config.poll_interval_seconds,
+                    spot_base_url=self._config.spot_base_url,
+                    futures_base_url=self._config.futures_base_url,
+                    request_timeout_seconds=self._config.request_timeout_seconds,
+                )
+            )
+            eth_spot_raw = eth_spot_adapter.fetch_spot_ticker()
             order_book_raw = self._adapter.fetch_order_book()
             futures_tickers = self._adapter.fetch_futures_tickers()
 
@@ -80,6 +96,7 @@ class CollectorLoop:
                 )
 
             spot_tick = self._adapter.parse_spot_tick(spot_raw)
+            eth_spot_tick = eth_spot_adapter.parse_spot_tick(eth_spot_raw)
             order_book_snapshot = self._adapter.parse_order_book_snapshot(order_book_raw)
             perp_tick = self._adapter.parse_perp_tick(perp_raw)
             funding_snapshot = self._adapter.parse_funding_snapshot(perp_raw)
@@ -88,7 +105,7 @@ class CollectorLoop:
             inserted_funding = 0
             inserted_order_book = 0
 
-            for tick in (spot_tick, perp_tick):
+            for tick in (spot_tick, eth_spot_tick, perp_tick):
                 exists = session.execute(
                     select(MarketTick).where(
                         MarketTick.exchange == tick.exchange,

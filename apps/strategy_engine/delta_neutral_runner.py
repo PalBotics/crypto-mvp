@@ -22,7 +22,13 @@ from core.paper.hedge_ratio import compute_hedge_ratio
 from core.paper.perp_execution import close_perp_short, open_perp_short
 from core.paper.pnl_calculator import create_pnl_snapshot_from_fill
 from core.paper.position_tracker import update_position_from_fill
-from core.risk.risk_engine import RiskEngine
+from core.risk.risk_engine import (
+    RiskEngine,
+    is_kill_switch_active,
+    is_strategy_enabled,
+    notify_exchange_failure,
+    notify_exchange_success,
+)
 from core.strategy.delta_neutral import DeltaNeutralConfig, DeltaNeutralStrategy
 from core.utils.logging import get_logger
 
@@ -86,6 +92,27 @@ class DeltaNeutralRunner:
     def _run_iteration(self, *, session: Session, account_name: str) -> None:
         self.risk_engine.db = session
 
+        if is_kill_switch_active(session):
+            _log.warning("kill_switch_active_halting_dn", account_name=account_name)
+            perp_qty = self._latest_perp_qty(session=session, account_name=account_name)
+            spot_qty = self._latest_spot_qty(session=session, account_name=account_name)
+            if perp_qty > 0 or spot_qty > 0:
+                asyncio.run(self.emergency_flatten(reason="kill_switch"))
+            return
+
+        if not is_strategy_enabled(session, "dn"):
+            _log.warning("dn_strategy_disabled_skipping", account_name=account_name)
+            return
+
+        for exchange in [self._settings.dn_perp_exchange, self._settings.dn_spot_exchange]:
+            if not self.risk_engine.is_exchange_available(exchange):
+                _log.warning(
+                    "exchange_circuit_breaker_blocking_dn",
+                    account_name=account_name,
+                    exchange=exchange,
+                )
+                return
+
         command_row = (
             session.execute(
                 select(DnRunnerCommand).where(DnRunnerCommand.account_name == account_name)
@@ -118,12 +145,24 @@ class DeltaNeutralRunner:
 
         latest_tick = self._latest_perp_tick(session)
         if latest_tick is None:
+            notify_exchange_failure(self.risk_engine, self._settings.dn_perp_exchange)
             _log.info("dn_iteration_skipped", reason="missing_mark_price")
             return
+
+        spot_tick = self._latest_spot_tick(session)
+        if spot_tick is None:
+            notify_exchange_failure(self.risk_engine, self._settings.dn_spot_exchange)
+        else:
+            spot_age_seconds = max(0, int((datetime.now(timezone.utc) - spot_tick.event_ts).total_seconds()))
+            if spot_age_seconds <= 120:
+                notify_exchange_success(self.risk_engine, self._settings.dn_spot_exchange)
+            else:
+                notify_exchange_failure(self.risk_engine, self._settings.dn_spot_exchange)
 
         now_utc = datetime.now(timezone.utc)
         data_age_seconds = max(0, int((now_utc - latest_tick.event_ts).total_seconds()))
         if data_age_seconds > 120:
+            notify_exchange_failure(self.risk_engine, self._settings.dn_perp_exchange)
             _log.warning("coinbase_feed_stale", data_age_seconds=data_age_seconds)
             session.add(
                 RiskEvent(
@@ -141,6 +180,7 @@ class DeltaNeutralRunner:
                 )
             )
             return
+        notify_exchange_success(self.risk_engine, self._settings.dn_perp_exchange)
 
         mark_price = Decimal(str(latest_tick.mid_price))
 
@@ -519,6 +559,18 @@ class DeltaNeutralRunner:
         if tick is None:
             return None
         return Decimal(str(tick.mid_price))
+
+    def _latest_spot_tick(self, session: Session) -> MarketTick | None:
+        return (
+            session.execute(
+                select(MarketTick)
+                .where(MarketTick.exchange == self._settings.dn_spot_exchange)
+                .where(MarketTick.symbol == self._settings.dn_spot_symbol)
+                .order_by(MarketTick.event_ts.desc())
+            )
+            .scalars()
+            .first()
+        )
 
     def _latest_funding(self, session: Session) -> FundingRateSnapshot | None:
         return (

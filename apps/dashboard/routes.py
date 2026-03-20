@@ -34,7 +34,10 @@ from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.models.quote_snapshot import QuoteSnapshot
 from core.models.risk_event import RiskEvent
+from core.models.system_control import SystemControl
 from core.paper.hedge_ratio import compute_hedge_ratio
+from core.risk.risk_engine import ensure_system_controls_defaults, is_kill_switch_active, is_strategy_enabled
+from core.risk.risk_engine import RiskEngine as PreflightRiskEngine
 from core.reporting.queries import (
     get_recent_funding_rates,
     get_open_positions,
@@ -84,6 +87,40 @@ class TwapLookbackRequest(BaseModel):
 class DepositRequest(BaseModel):
     amount: str
     note: str | None = None
+
+
+class KillSwitchRequest(BaseModel):
+    active: bool
+    reason: str
+
+
+class StrategyControlRequest(BaseModel):
+    strategy: str
+    enabled: bool
+    reason: str | None = None
+
+
+def _set_system_control(session: Session, *, key: str, value: str, reason: str | None) -> SystemControl:
+    row = (
+        session.execute(select(SystemControl).where(SystemControl.key == key))
+        .scalars()
+        .first()
+    )
+    now_utc = datetime.now(timezone.utc)
+    if row is None:
+        row = SystemControl(
+            key=key,
+            value=value,
+            updated_at=now_utc,
+            reason=reason,
+        )
+        session.add(row)
+    else:
+        row.value = value
+        row.updated_at = now_utc
+        row.reason = reason
+    session.flush()
+    return row
 
 
 def _resolve_twap_lookback_hours() -> int:
@@ -836,4 +873,124 @@ def fill_drought(session: SessionDep) -> dict:
         "hours_since_fill": hours_since_fill,
         "fill_count_today": int(fill_count_today or 0),
         "fill_count_total": int(fill_count_total or 0),
+    }
+
+
+@router.post("/system/kill-switch")
+def set_kill_switch(payload: KillSwitchRequest, session: SessionDep) -> dict:
+    settings = get_settings()
+    if settings.run_mode != "paper":
+        raise HTTPException(status_code=403, detail={"error": "paper mode only"})
+
+    ensure_system_controls_defaults(session)
+    value = "true" if payload.active else "false"
+    row = _set_system_control(
+        session,
+        key="kill_switch_active",
+        value=value,
+        reason=payload.reason,
+    )
+    session.commit()
+
+    if payload.active:
+        _log.warning("kill_switch_activated", reason=payload.reason)
+    else:
+        _log.info("kill_switch_deactivated", reason=payload.reason)
+
+    return {
+        "status": "ok",
+        "kill_switch_active": payload.active,
+        "reason": payload.reason,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.post("/system/strategy-control")
+def set_strategy_control(payload: StrategyControlRequest, session: SessionDep) -> dict:
+    settings = get_settings()
+    if settings.run_mode != "paper":
+        raise HTTPException(status_code=403, detail={"error": "paper mode only"})
+
+    strategy = payload.strategy.strip().lower()
+    if strategy not in {"mm", "dn"}:
+        raise HTTPException(status_code=422, detail={"error": "strategy must be mm or dn"})
+
+    ensure_system_controls_defaults(session)
+    key = f"{strategy}_enabled"
+    value = "true" if payload.enabled else "false"
+    _set_system_control(
+        session,
+        key=key,
+        value=value,
+        reason=payload.reason,
+    )
+    session.commit()
+
+    return {
+        "status": "ok",
+        "strategy": strategy,
+        "enabled": payload.enabled,
+    }
+
+
+@router.get("/system/status")
+def get_system_status(session: SessionDep) -> dict:
+    ensure_system_controls_defaults(session)
+
+    kill_switch = is_kill_switch_active(session)
+    mm_enabled = is_strategy_enabled(session, "mm")
+    dn_enabled = is_strategy_enabled(session, "dn")
+    breaker_engine = PreflightRiskEngine(account_name="system", db=session)
+    circuit_breakers = breaker_engine.get_breaker_states(
+        exchanges=["kraken", "coinbase_advanced", "kraken_futures"],
+    )
+
+    positions = (
+        session.execute(
+            select(PositionSnapshot)
+            .where(PositionSnapshot.account_name.in_(["paper_mm", "paper_dn"]))
+            .where(PositionSnapshot.quantity > 0)
+        )
+        .scalars()
+        .all()
+    )
+
+    mm_open_positions = 0
+    dn_open_positions = 0
+    total_notional = Decimal("0")
+    for row in positions:
+        qty = Decimal(str(row.quantity or 0))
+        px = (
+            Decimal(str(row.mark_price))
+            if row.mark_price is not None
+            else Decimal(str(row.avg_entry_price or 0))
+        )
+        total_notional += qty * px
+        if row.account_name == "paper_mm":
+            mm_open_positions += 1
+        elif row.account_name == "paper_dn":
+            dn_open_positions += 1
+
+    last_event = (
+        session.execute(select(RiskEvent).order_by(RiskEvent.created_ts.desc()).limit(1))
+        .scalars()
+        .first()
+    )
+    last_event_payload = None
+    if last_event is not None:
+        last_event_payload = {
+            "type": last_event.event_type,
+            "severity": last_event.severity,
+            "created_ts": last_event.created_ts,
+        }
+
+    return {
+        "kill_switch_active": kill_switch,
+        "mm_enabled": mm_enabled,
+        "dn_enabled": dn_enabled,
+        "circuit_breakers": circuit_breakers,
+        "mm_open_positions": mm_open_positions,
+        "dn_open_positions": dn_open_positions,
+        "total_notional_usd": str(_round_decimal(total_notional, USD_QUANT)),
+        "last_risk_event": last_event_payload,
     }

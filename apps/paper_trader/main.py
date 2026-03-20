@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.alerting.evaluator import AlertEvaluator
+from core.models.market_tick import MarketTick
 from core.models.order_book_snapshot import OrderBookSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.models.order_intent import OrderIntent
@@ -23,7 +24,13 @@ from core.paper.execution_flow import execute_one_paper_market_intent
 from core.paper.fees import FeeModel
 from core.paper.funding_accrual import accrue_funding_payment
 from core.risk.engine import RiskEngine as LegacyRiskEngine
-from core.risk.risk_engine import RiskEngine as PreflightRiskEngine
+from core.risk.risk_engine import (
+    RiskEngine as PreflightRiskEngine,
+    is_kill_switch_active,
+    is_strategy_enabled,
+    notify_exchange_failure,
+    notify_exchange_success,
+)
 from core.reporting.account import compute_paper_account_snapshot
 from core.strategy.funding_capture import FundingCaptureStrategy
 from core.strategy.market_making import MarketMakingConfig, MarketMakingStrategy
@@ -34,6 +41,16 @@ TWAP_OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "data" / "twap_lookba
 ALLOWED_TWAP_HOURS = {1, 2, 4, 8, 24}
 DEFAULT_SG_WINDOW = 25
 DEFAULT_SG_DEGREE = 2
+
+
+def _paper_mm_control_gate(*, session: Session, logger, iteration: int) -> bool:
+    if is_kill_switch_active(session):
+        logger.warning("kill_switch_active_halting_mm", iteration=iteration)
+        return True
+    if not is_strategy_enabled(session, "mm"):
+        logger.warning("mm_strategy_disabled_skipping", iteration=iteration)
+        return True
+    return False
 
 
 def _optional_decimal_env(name: str) -> Decimal | None:
@@ -856,6 +873,43 @@ def main() -> None:
             while running:
                 iteration += 1
                 try:
+                    if _paper_mm_control_gate(session=session, logger=ctx.logger, iteration=iteration):
+                        if running:
+                            time.sleep(loop_interval_seconds)
+                        continue
+
+                    if not mm_risk_engine.is_exchange_available("kraken"):
+                        ctx.logger.warning(
+                            "exchange_circuit_breaker_blocking_mm",
+                            iteration=iteration,
+                            exchange="kraken",
+                        )
+                        if running:
+                            time.sleep(loop_interval_seconds)
+                        continue
+
+                    latest_kraken_tick = (
+                        session.execute(
+                            select(MarketTick)
+                            .where(MarketTick.exchange == "kraken")
+                            .where(MarketTick.symbol == "XBTUSD")
+                            .order_by(MarketTick.event_ts.desc())
+                        )
+                        .scalars()
+                        .first()
+                    )
+                    if latest_kraken_tick is None:
+                        notify_exchange_failure(mm_risk_engine, "kraken")
+                    else:
+                        tick_age_seconds = max(
+                            0,
+                            int((datetime.now(timezone.utc) - latest_kraken_tick.event_ts).total_seconds()),
+                        )
+                        if tick_age_seconds <= 120:
+                            notify_exchange_success(mm_risk_engine, "kraken")
+                        else:
+                            notify_exchange_failure(mm_risk_engine, "kraken")
+
                     mm_risk_engine.db = session
                     mm_preflight = mm_risk_engine.run_preflight(
                         exchanges_to_check=[("kraken", "XBTUSD")],

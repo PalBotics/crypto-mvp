@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         default=3000.0,
         alias="RISK_MAX_SYMBOL_NOTIONAL_USD",
     )
+    risk_max_consecutive_failures: int = Field(
+        default=5,
+        alias="RISK_MAX_CONSECUTIVE_FAILURES",
+    )
 
     @property
     def database_url(self) -> str:

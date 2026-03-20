@@ -134,6 +134,10 @@ def test_stale_feed_skips_iteration(monkeypatch) -> None:
     ]
 
     runner = _make_runner(session=session, account_name="paper_dn_stale")
+    monkeypatch.setattr("apps.strategy_engine.delta_neutral_runner.is_kill_switch_active", lambda _db: False)
+    monkeypatch.setattr("apps.strategy_engine.delta_neutral_runner.is_strategy_enabled", lambda _db, _s: True)
+    runner.risk_engine.run_preflight = Mock(return_value=SimpleNamespace(passed=True))  # type: ignore[method-assign]
+    runner._latest_spot_tick = lambda _session: stale_tick  # type: ignore[method-assign]
     evaluate_mock = Mock()
     runner._strategy.evaluate = evaluate_mock  # type: ignore[method-assign]
 
