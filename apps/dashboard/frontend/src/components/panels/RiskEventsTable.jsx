@@ -6,6 +6,20 @@ import { toLocalTime } from '../../utils/format'
 export default function RiskEventsTable() {
   const riskEvents = useRiskEvents(50)
 
+  function detailsText(row) {
+    if (!row || row.details_json === null || row.details_json === undefined) {
+      return '—'
+    }
+    if (typeof row.details_json === 'string') {
+      return row.details_json
+    }
+    try {
+      return JSON.stringify(row.details_json)
+    } catch {
+      return '—'
+    }
+  }
+
   const columns = [
     {
       key: 'created_ts',
@@ -14,9 +28,9 @@ export default function RiskEventsTable() {
       render: (v) => <span className="text-text-dim text-[10px]">{toLocalTime(v)}</span>,
     },
     {
-      key: 'rule_name',
-      label: 'Rule',
-      render: (v) => <span className="font-mono text-xs text-text-primary">{v}</span>,
+      key: 'strategy_name',
+      label: 'Account',
+      render: (v) => <span className="font-mono text-xs text-text-primary">{v || '—'}</span>,
     },
     {
       key: 'event_type',
@@ -28,11 +42,17 @@ export default function RiskEventsTable() {
       label: 'Severity',
       render: (v) => {
         const sev = String(v ?? '').toLowerCase()
-        const sevClass =
-          sev === 'high' ? 'text-red' : sev === 'medium' ? 'text-yellow' : sev === 'low' ? 'text-green' : 'text-text-dim'
+        const sevClass = sev === 'critical' ? 'text-red' : sev === 'warning' ? 'text-yellow' : sev === 'info' ? 'text-text-primary' : 'text-text-dim'
 
         return <span className={`font-mono text-[10px] font-semibold uppercase ${sevClass}`}>{sev || '—'}</span>
       },
+    },
+    {
+      key: 'details_json',
+      label: 'Details',
+      render: (_v, row) => (
+        <span className="font-mono text-[10px] text-text-dim break-all">{detailsText(row)}</span>
+      ),
     },
   ]
 

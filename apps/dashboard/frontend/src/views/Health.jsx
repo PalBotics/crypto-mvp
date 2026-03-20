@@ -1,6 +1,9 @@
 import RiskEventsTable from '../components/panels/RiskEventsTable'
+import SystemControlsPanel from '../components/panels/SystemControlsPanel'
+import CircuitBreakerPanel from '../components/panels/CircuitBreakerPanel'
 import useHealth from '../hooks/useHealth'
 import useRunSummary from '../hooks/useRunSummary'
+import useSystemStatus from '../hooks/useSystemStatus'
 import StatusDot from '../components/common/StatusDot'
 import LoadingState, { ErrorState } from '../components/common/Loading'
 import { toLocalTime } from '../utils/format'
@@ -32,6 +35,7 @@ function snapshotAgeClass(seconds) {
 export default function Health() {
   const health = useHealth()
   const summary = useRunSummary()
+  const system = useSystemStatus()
 
   const healthStatus =
     health.data?.status === 'ok' ? 'ok' : health.error ? 'error' : health.loading ? 'stale' : 'stale'
@@ -88,6 +92,15 @@ export default function Health() {
           )}
         </div>
       </div>
+
+      <SystemControlsPanel
+        systemStatus={system.systemStatus}
+        loading={system.loading}
+        error={system.error}
+        onRefresh={system.refetch}
+      />
+
+      <CircuitBreakerPanel systemStatus={system.systemStatus} />
 
       <RiskEventsTable />
     </div>
