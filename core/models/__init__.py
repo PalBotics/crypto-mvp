@@ -13,6 +13,7 @@ from core.models.position_snapshot import PositionSnapshot
 from core.models.quote_snapshot import QuoteSnapshot
 from core.models.risk_event import RiskEvent
 from core.models.strategy_signal import StrategySignal
+from core.models.strategy_signal_log import StrategySignalLog
 from core.models.system_event import SystemEvent
 from core.models.system_control import SystemControl
 
@@ -32,6 +33,7 @@ __all__ = [
     "QuoteSnapshot",
     "RiskEvent",
     "StrategySignal",
+    "StrategySignalLog",
     "SystemEvent",
     "SystemControl",
 ]

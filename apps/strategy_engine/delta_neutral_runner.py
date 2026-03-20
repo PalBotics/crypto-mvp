@@ -17,6 +17,7 @@ from core.models.market_tick import MarketTick
 from core.models.pnl_snapshot import PnLSnapshot
 from core.models.position_snapshot import PositionSnapshot
 from core.models.risk_event import RiskEvent
+from core.models.strategy_signal_log import StrategySignalLog
 from core.paper.funding_accrual import FundingAccrualEngine
 from core.paper.hedge_ratio import compute_hedge_ratio
 from core.paper.perp_execution import close_perp_short, open_perp_short
@@ -60,6 +61,7 @@ class DeltaNeutralRunner:
         )
         self._last_accrual_ts: datetime | None = None
         self._flattened = False
+        self._iteration_counter = 0
         with self._session_factory() as db:
             self.risk_engine = RiskEngine(account_name=account_name, db=db)
 
@@ -95,6 +97,7 @@ class DeltaNeutralRunner:
             self.close()
 
     def _run_iteration(self, *, session: Session, account_name: str) -> None:
+        self._iteration_counter += 1
         self.risk_engine.db = session
 
         if is_kill_switch_active(session):
@@ -233,6 +236,29 @@ class DeltaNeutralRunner:
         )
 
         signal_type = (signal.signal_type or "").upper()
+        normalized_signal = self._normalize_signal_type(signal_type)
+
+        self._persist_strategy_signal(
+            session=session,
+            account_name=self._signal_account_name(account_name),
+            signal=normalized_signal,
+            funding_rate_apr=funding_rate_apr,
+            eth_mark_price=mark_price,
+            iteration=self._iteration_counter,
+        )
+
+        if self._is_dry_run_mode():
+            entry_threshold_apr = Decimal(str(self._settings.dn_funding_entry_threshold_apr))
+            _log.info(
+                "dry_run_iteration_summary",
+                signal=normalized_signal,
+                funding_rate_apr=str(funding_rate_apr),
+                eth_mark_price=str(mark_price),
+                would_enter=(funding_rate_apr >= entry_threshold_apr),
+                entry_threshold_apr=float(self._settings.dn_funding_entry_threshold_apr),
+                iteration=self._iteration_counter,
+                account=self._signal_account_name(account_name),
+            )
 
         if signal_type == "ENTER":
             self._handle_enter(
@@ -249,6 +275,41 @@ class DeltaNeutralRunner:
             self._handle_hold(session=session, account_name=account_name, funding_rate_apr=funding_rate_apr, hedge_status=hedge_status)
         else:
             _log.info("dn_blocked", funding_rate_apr=str(funding_rate_apr))
+
+    def _normalize_signal_type(self, signal_type: str) -> str:
+        normalized = (signal_type or "").upper().strip()
+        if normalized in {"ENTER", "EXIT", "HOLD", "BLOCKED", "REBALANCE"}:
+            return normalized
+        return "BLOCKED"
+
+    def _is_dry_run_mode(self) -> bool:
+        return bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False))
+
+    def _signal_account_name(self, account_name: str) -> str:
+        if bool(getattr(self._settings, "live_mode", False)):
+            return "live_dn"
+        return account_name
+
+    def _persist_strategy_signal(
+        self,
+        *,
+        session: Session,
+        account_name: str,
+        signal: str,
+        funding_rate_apr: Decimal,
+        eth_mark_price: Decimal,
+        iteration: int,
+    ) -> None:
+        session.add(
+            StrategySignalLog(
+                account_name=account_name,
+                signal=signal,
+                funding_rate_apr=funding_rate_apr,
+                eth_mark_price=eth_mark_price,
+                is_dry_run=self._is_dry_run_mode(),
+                iteration=iteration,
+            )
+        )
 
     def _validate_startup_configuration(self, session: Session) -> bool:
         live_mode = bool(getattr(self._settings, "live_mode", False))
@@ -299,7 +360,7 @@ class DeltaNeutralRunner:
         mark_price: Decimal,
         funding_rate_apr: Decimal,
     ) -> None:
-        if bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False)):
+        if self._is_dry_run_mode():
             _log.info(
                 "dry_run_signal_only",
                 strategy="delta_neutral",
@@ -308,7 +369,7 @@ class DeltaNeutralRunner:
             )
             return
 
-        contract_qty = int(self._settings.dn_contract_qty)
+        contract_qty = int(self._settings.live_dn_contract_qty) if bool(getattr(self._settings, "live_mode", False)) else int(self._settings.dn_contract_qty)
         quantity = Decimal(contract_qty) * Decimal("0.10")
         proposed_notional = quantity * mark_price
 
@@ -372,7 +433,7 @@ class DeltaNeutralRunner:
         )
 
     def _handle_exit(self, *, session: Session, account_name: str, mark_price: Decimal) -> None:
-        if bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False)):
+        if self._is_dry_run_mode():
             _log.info(
                 "dry_run_signal_only",
                 strategy="delta_neutral",
@@ -415,7 +476,7 @@ class DeltaNeutralRunner:
         mark_price: Decimal,
         hedge_status: dict,
     ) -> None:
-        if bool(getattr(self._settings, "live_mode", False)) and bool(getattr(self._settings, "dry_run", False)):
+        if self._is_dry_run_mode():
             _log.info(
                 "dry_run_signal_only",
                 strategy="delta_neutral",
