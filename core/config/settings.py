@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     dn_perp_exchange: str = Field(default="coinbase_advanced", alias="DN_PERP_EXCHANGE")
     dn_perp_symbol: str = Field(default="ETH-PERP", alias="DN_PERP_SYMBOL")
 
+    alert_email_enabled: bool = Field(default=False, alias="ALERT_EMAIL_ENABLED")
+    alert_email_from: str = Field(default="", alias="ALERT_EMAIL_FROM")
+    alert_email_password: str = Field(default="", alias="ALERT_EMAIL_PASSWORD")
+    alert_email_to: str = Field(default="", alias="ALERT_EMAIL_TO")
+    alert_email_smtp_host: str = Field(default="smtp.gmail.com", alias="ALERT_EMAIL_SMTP_HOST")
+    alert_email_smtp_port: int = Field(default=587, alias="ALERT_EMAIL_SMTP_PORT")
+
     risk_max_notional_usd: float = Field(default=5000.0, alias="RISK_MAX_NOTIONAL_USD")
     risk_max_symbol_notional_usd: float = Field(
         default=3000.0,

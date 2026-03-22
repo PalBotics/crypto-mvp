@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import smtplib
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +113,40 @@ def run_full_conditions_check(project_root: Path) -> tuple[int, int, str]:
 
     total = pass_count + fail_count
     return pass_count, total, overall
+
+
+def send_email_alert(subject: str, body: str) -> bool:
+    """Send an email alert via SMTP.  Returns True on success, False on any failure."""
+    settings = get_settings()
+    if not settings.alert_email_enabled:
+        return False
+
+    missing = [f for f, v in [
+        ("ALERT_EMAIL_FROM", settings.alert_email_from),
+        ("ALERT_EMAIL_PASSWORD", settings.alert_email_password),
+        ("ALERT_EMAIL_TO", settings.alert_email_to),
+    ] if not v]
+    if missing:
+        print(f"[email] WARNING: alert_email_enabled=True but missing: {', '.join(missing)} — skipping email")
+        return False
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = settings.alert_email_from
+    msg["To"] = settings.alert_email_to
+
+    try:
+        with smtplib.SMTP(settings.alert_email_smtp_host, settings.alert_email_smtp_port, timeout=15) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(settings.alert_email_from, settings.alert_email_password)
+            smtp.sendmail(settings.alert_email_from, [settings.alert_email_to], msg.as_string())
+        print(f"[email] email_alert_sent subject={subject!r}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[email] email_alert_failed error={exc!r}")
+        return False
 
 
 def _write_log_line(path: Path, text: str, *, dry_run: bool) -> None:
@@ -270,6 +306,18 @@ def run_monitor(
                         entry_threshold_apr=entry_threshold_apr,
                     )
                     _write_log_line(alerts_log, alert_line, dry_run=dry_run)
+                    send_email_alert(
+                        subject=f"\U0001f680 ETH Funding Alert: {_fmt_signed_pct(funding_apr)} APR \u2014 Entry conditions may be met",
+                        body=(
+                            f"ETH Funding APR has crossed ABOVE the entry threshold.\n\n"
+                            f"  Funding APR:       {_fmt_signed_pct(funding_apr)}\n"
+                            f"  Entry threshold:   {_fmt_signed_pct(entry_threshold_apr)}\n"
+                            f"  Timestamp (UTC):   {_ts_label(now)}\n\n"
+                            f"Next step: run\n"
+                            f"  python scripts/check_live_entry_conditions.py\n\n"
+                            f"If all conditions pass, proceed to Sprint 3 (live trading)."
+                        ),
+                    )
                     had_above_entry = True
 
                 if crossed_down:
@@ -285,6 +333,17 @@ def run_monitor(
                         exit_threshold_apr=exit_threshold_apr,
                     )
                     _write_log_line(alerts_log, alert_line, dry_run=dry_run)
+                    send_email_alert(
+                        subject=f"\U0001f4c9 ETH Funding Alert: {_fmt_signed_pct(funding_apr)} APR \u2014 Below exit threshold",
+                        body=(
+                            f"ETH Funding APR has dropped BELOW the exit threshold.\n\n"
+                            f"  Funding APR:       {_fmt_signed_pct(funding_apr)}\n"
+                            f"  Exit threshold:    {_fmt_signed_pct(exit_threshold_apr)}\n"
+                            f"  Timestamp (UTC):   {_ts_label(now)}\n\n"
+                            f"Position status: No live position open (paper/dry-run mode).\n"
+                            f"Action: Stay in waiting mode until funding re-enters the setup range."
+                        ),
+                    )
                     had_above_entry = False
 
                 last_funding_apr = funding_apr
@@ -319,11 +378,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slow-interval-hours", type=int, default=6)
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--test-email", action="store_true", help="Send a test email and exit")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.test_email:
+        settings = get_settings()
+        print("[email] Testing email configuration...")
+        print(f"  ALERT_EMAIL_ENABLED : {settings.alert_email_enabled}")
+        print(f"  ALERT_EMAIL_FROM    : {settings.alert_email_from or '(not set)'}")
+        print(f"  ALERT_EMAIL_TO      : {settings.alert_email_to or '(not set)'}")
+        print(f"  SMTP host:port      : {settings.alert_email_smtp_host}:{settings.alert_email_smtp_port}")
+        ok = send_email_alert(
+            subject="\U0001f9ea Funding Monitor — test email",
+            body="This is a test message from scripts/funding_monitor.py.\nIf you received this, email alerts are configured correctly.",
+        )
+        if ok:
+            print("[email] Test email sent successfully.")
+            return 0
+        else:
+            print("[email] Test email was NOT sent (see warnings above).")
+            return 1
     return run_monitor(
         fast_interval_minutes=args.fast_interval_minutes,
         slow_interval_hours=args.slow_interval_hours,
