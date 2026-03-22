@@ -81,7 +81,7 @@ export default function FillHistory() {
       key: 'fill_qty',
       label: 'Qty',
       align: 'right',
-      render: (v) => <span className="font-mono text-xs">{formatQty(v)}</span>,
+      render: (v) => <span className="font-mono text-xs">{formatQty(v, 8)}</span>,
     },
     {
       key: 'fee_amount',
@@ -113,7 +113,7 @@ export default function FillHistory() {
 
         <div className="flex justify-between items-center">
           <span className="label">Total Volume</span>
-          <span className="font-mono text-xs text-text-primary">{formatQty(stats.totalVolume)}</span>
+          <span className="font-mono text-xs text-text-primary">{formatQty(stats.totalVolume, 8)}</span>
         </div>
 
         <div className="flex justify-between items-center">

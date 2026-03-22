@@ -30,7 +30,7 @@ export default function RecentFills() {
       key: 'fill_qty',
       label: 'Qty',
       align: 'right',
-      render: (v) => <span className="font-mono text-xs">{formatQty(v)}</span>,
+      render: (v) => <span className="font-mono text-xs">{formatQty(v, 8)}</span>,
     },
     {
       key: 'fee_amount',

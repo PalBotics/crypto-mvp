@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -29,7 +29,7 @@ class MonitorStats:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now()
 
 
 def _ts_label(ts: datetime) -> str:
@@ -192,7 +192,7 @@ def _print_crossed_above_alert(*, ts: datetime, funding_apr: Decimal, entry_thre
     print("!! FUNDING THRESHOLD CROSSED !!")
     print("=" * 60)
     print(f"ETH Funding APR:  {_fmt_signed_pct(funding_apr)}  (threshold: {_fmt_signed_pct(entry_threshold_apr)})")
-    print(f"Time:             {_ts_label(ts)} UTC")
+    print(f"Time:             {_ts_label(ts)}")
     print("Action required:  Run python scripts/check_live_entry_conditions.py")
     print("                  If all checks pass, proceed to Sprint 3.")
     print("=" * 60)
@@ -203,7 +203,7 @@ def _print_crossed_below_alert(*, ts: datetime, funding_apr: Decimal, exit_thres
     print("!! FUNDING DROPPED BELOW EXIT THRESHOLD !!")
     print("=" * 60)
     print(f"ETH Funding APR:  {_fmt_signed_pct(funding_apr)}  (exit threshold: {_fmt_signed_pct(exit_threshold_apr)})")
-    print(f"Time:             {_ts_label(ts)} UTC")
+    print(f"Time:             {_ts_label(ts)}")
     print("Action required:  Stay in waiting mode until funding re-enters setup range.")
     print("=" * 60)
 

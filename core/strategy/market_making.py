@@ -26,6 +26,7 @@ class MarketMakingConfig:
     quote_size_pct: Decimal | None = None
     max_inventory_pct: Decimal | None = None
     min_profit_bps: Decimal = Decimal("10")
+    min_order_size_btc: Decimal = Decimal("0.0001")
     mm_fee_bps: float = 25.0
     mm_target_profit_bps: float = 20.0
     bid_offset_bps: float = 120.0
@@ -217,6 +218,15 @@ class MarketMakingStrategy:
         if buy_quote_size > max_buy_size:
             buy_quote_size = max_buy_size
 
+        if buy_quote_size > Decimal("0") and buy_quote_size < self.config.min_order_size_btc:
+            _log.info(
+                "order_below_minimum_size",
+                side="buy",
+                quote_size=str(buy_quote_size),
+                minimum=str(self.config.min_order_size_btc),
+            )
+            buy_quote_size = Decimal("0")
+
         if "buy" in quoteable_sides and position_btc < max_inventory:
             if buy_quote_size > Decimal("0"):
                 intents.append(
@@ -271,14 +281,22 @@ class MarketMakingStrategy:
                         capped_sell_size=str(sell_quote_size),
                         current_position_qty=str(current_position_qty),
                     )
-                intents.append(
-                    self._build_intent(
+                if sell_quote_size < self.config.min_order_size_btc:
+                    _log.info(
+                        "order_below_minimum_size",
                         side="sell",
-                        limit_price=ask_price,
-                        current_ts=current_ts,
-                        quantity=sell_quote_size,
+                        quote_size=str(sell_quote_size),
+                        minimum=str(self.config.min_order_size_btc),
                     )
-                )
+                else:
+                    intents.append(
+                        self._build_intent(
+                            side="sell",
+                            limit_price=ask_price,
+                            current_ts=current_ts,
+                            quantity=sell_quote_size,
+                        )
+                    )
 
         _log.info(
             "market_making_signal_generated",

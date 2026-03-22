@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     alert_email_to: str = Field(default="", alias="ALERT_EMAIL_TO")
     alert_email_smtp_host: str = Field(default="smtp.gmail.com", alias="ALERT_EMAIL_SMTP_HOST")
     alert_email_smtp_port: int = Field(default=587, alias="ALERT_EMAIL_SMTP_PORT")
+    mm_min_order_size_btc: float = Field(default=0.0001, alias="MM_MIN_ORDER_SIZE_BTC")
 
     risk_max_notional_usd: float = Field(default=5000.0, alias="RISK_MAX_NOTIONAL_USD")
     risk_max_symbol_notional_usd: float = Field(

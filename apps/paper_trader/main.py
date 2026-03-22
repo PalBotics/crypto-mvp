@@ -861,6 +861,8 @@ def main() -> None:
     _quote = os.environ.get("MM_QUOTE_SIZE")
     quote_size = Decimal(_quote) if _quote is not None else None
     quote_size_pct = _optional_decimal_env("MM_QUOTE_SIZE_PCT")
+    _min_order_size_btc = os.environ.get("MM_MIN_ORDER_SIZE_BTC")
+    min_order_size_btc = Decimal(_min_order_size_btc) if _min_order_size_btc is not None else None
     _inventory = os.environ.get("MM_MAX_INVENTORY")
     max_inventory = Decimal(_inventory) if _inventory is not None else None
     max_inventory_pct = _optional_decimal_env("MM_MAX_INVENTORY_PCT")
@@ -907,6 +909,8 @@ def main() -> None:
         mm_kwargs["max_inventory_pct"] = max_inventory_pct
     if min_profit_bps is not None:
         mm_kwargs["min_profit_bps"] = min_profit_bps
+    if min_order_size_btc is not None:
+        mm_kwargs["min_order_size_btc"] = min_order_size_btc
     if mm_fee_bps is not None:
         mm_kwargs["mm_fee_bps"] = mm_fee_bps
     if mm_target_profit_bps is not None:
