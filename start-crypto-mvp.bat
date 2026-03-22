@@ -26,9 +26,11 @@ echo Starting services...
 start "Collector" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python -m apps.collector.main"
 start "Paper Trader" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python -m apps.paper_trader.main"
 start "Dashboard" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python launch.py"
+start "Funding Monitor" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypto-mvp; .venv\Scripts\activate; python scripts/funding_monitor.py --days 30"
 
 echo.
 echo All services started.
 echo Dashboard at http://localhost:8000
+echo Funding Monitor running (watching for ETH funding >= 5%% APR)
 echo.
 pause
