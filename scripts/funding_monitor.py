@@ -130,10 +130,15 @@ def send_email_alert(subject: str, body: str) -> bool:
         print(f"[email] WARNING: alert_email_enabled=True but missing: {', '.join(missing)} — skipping email")
         return False
 
+    recipients = [settings.alert_email_to]
+    if settings.alert_email_to_2:
+        recipients.append(settings.alert_email_to_2)
+
     msg = MIMEText(body, "plain", "utf-8")
+    msg["Content-Type"] = "text/plain; charset=utf-8"
     msg["Subject"] = subject
     msg["From"] = settings.alert_email_from
-    msg["To"] = settings.alert_email_to
+    msg["To"] = ", ".join(recipients)
 
     try:
         with smtplib.SMTP(settings.alert_email_smtp_host, settings.alert_email_smtp_port, timeout=15) as smtp:
@@ -141,7 +146,7 @@ def send_email_alert(subject: str, body: str) -> bool:
             smtp.starttls()
             smtp.ehlo()
             smtp.login(settings.alert_email_from, settings.alert_email_password)
-            smtp.sendmail(settings.alert_email_from, [settings.alert_email_to], msg.as_string())
+            smtp.sendmail(settings.alert_email_from, recipients, msg.as_string())
         print(f"[email] email_alert_sent subject={subject!r}")
         return True
     except Exception as exc:  # noqa: BLE001

@@ -31,6 +31,6 @@ start "Funding Monitor" powershell -NoExit -Command "cd C:\Users\Paul\Apps\crypt
 echo.
 echo All services started.
 echo Dashboard at http://localhost:8000
-echo Funding Monitor running (watching for ETH funding >= 5%% APR)
+echo Funding Monitor running (watching for ETH funding ^>= 5%% APR)
 echo.
 pause

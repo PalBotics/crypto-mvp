@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     alert_email_from: str = Field(default="", alias="ALERT_EMAIL_FROM")
     alert_email_password: str = Field(default="", alias="ALERT_EMAIL_PASSWORD")
     alert_email_to: str = Field(default="", alias="ALERT_EMAIL_TO")
+    alert_email_to_2: str = Field(default="", alias="ALERT_EMAIL_TO_2")
     alert_email_smtp_host: str = Field(default="smtp.gmail.com", alias="ALERT_EMAIL_SMTP_HOST")
     alert_email_smtp_port: int = Field(default=587, alias="ALERT_EMAIL_SMTP_PORT")
     mm_min_order_size_btc: float = Field(default=0.0001, alias="MM_MIN_ORDER_SIZE_BTC")

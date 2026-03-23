@@ -32,7 +32,7 @@ export default function PositionSummary() {
           <div className="grid grid-cols-2 gap-3">
             <div className="flex justify-between items-center">
               <span className="label">Quantity</span>
-              <span className="font-mono text-xs">{formatQty(position.quantity)}</span>
+              <span className="font-mono text-xs">{formatQty(position.quantity, 8)}</span>
             </div>
 
             <div className="flex justify-between items-center">
