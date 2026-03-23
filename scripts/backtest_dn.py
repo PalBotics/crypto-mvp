@@ -26,8 +26,7 @@ class HourlyCandle:
 @dataclass(frozen=True)
 class FundingEvent:
     ts: datetime
-    funding_rate_8h: Decimal
-    hourly_rate: Decimal
+    funding_rate_8h_pct: Decimal
 
 
 @dataclass(frozen=True)
@@ -66,6 +65,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-apr", type=str, default="2.0", help="Exit threshold APR percent")
     parser.add_argument("--margin-rate", type=str, default="0.10", help="Initial margin rate")
     parser.add_argument("--fee-bps", type=str, default="5.0", help="Taker fee in bps per leg")
+    parser.add_argument(
+        "--slippage-buffer",
+        type=str,
+        default="1.0",
+        help="Fee multiplier for slippage (1.0 = no buffer, 1.2 = 20%% extra)",
+    )
     parser.add_argument("--spot-csv", type=str, default="testdata/ETHUSD_60.csv", help="Path to hourly spot CSV")
     parser.add_argument("--funding-rate", type=str, default=None, help="Constant hourly funding rate (synthetic) or live from API (default)")
     parser.add_argument("--output", type=str, default="backtest_results_dn.csv", help="CSV output path")
@@ -181,12 +186,12 @@ def fetch_okx_funding_events(start_dt: datetime, end_exclusive: datetime) -> lis
                 funding_ms = int(row["fundingTime"])
                 if funding_ms < start_ms or funding_ms > end_ms:
                     continue
-                rate_8h = Decimal(str(row["fundingRate"]))
-                hourly_rate = rate_8h / Decimal("8")
+                # OKX returns fundingRate as a decimal fraction per 8h (e.g. 0.0002 = 0.02%).
+                # Convert to percentage units to align with CLI semantics (--funding-rate 0.02 means 0.02%).
+                rate_8h_pct = Decimal(str(row["fundingRate"])) * Decimal("100")
                 events_by_ts[funding_ms] = FundingEvent(
                     ts=datetime.fromtimestamp(funding_ms / 1000, tz=timezone.utc),
-                    funding_rate_8h=rate_8h,
-                    hourly_rate=hourly_rate,
+                    funding_rate_8h_pct=rate_8h_pct,
                 )
             except (KeyError, ValueError, TypeError):
                 continue
@@ -202,8 +207,9 @@ def fetch_okx_funding_events(start_dt: datetime, end_exclusive: datetime) -> lis
     return events
 
 
-def annualize_hourly_rate(hourly_rate: Decimal) -> Decimal:
-    return hourly_rate * Decimal("24") * Decimal("365") * Decimal("100")
+def annualize_8h_rate_pct(funding_rate_8h_pct: Decimal) -> Decimal:
+    # 3 settlement windows per day, 365 days per year.
+    return funding_rate_8h_pct * Decimal("3") * Decimal("365")
 
 
 def write_hourly_csv(path: Path, rows: list[HourlyPnlRow]) -> None:
@@ -250,19 +256,20 @@ def run_backtest(args: argparse.Namespace) -> int:
     margin_rate = Decimal(str(args.margin_rate))
     fee_bps = Decimal(str(args.fee_bps))
     fee_rate = fee_bps / Decimal("10000")
+    slippage_buffer = Decimal(str(args.slippage_buffer))
     spot_qty = Decimal(contract_qty) * Decimal("0.10")
 
     candles = fetch_spot_candles_from_csv(args.spot_csv, start_dt, end_exclusive)
     
-    # Use synthetic funding rate if provided, otherwise fetch from API
+    # Use synthetic funding rate if provided, otherwise fetch from API.
+    # --funding-rate is interpreted as percent per 8h settlement (e.g. 0.02 => 0.02%/8h).
     if args.funding_rate is not None:
-        print(f"Using synthetic hourly funding rate: {args.funding_rate}")
-        synthetic_rate = Decimal(str(args.funding_rate))
+        print(f"Using synthetic funding rate (percent per 8h): {args.funding_rate}")
+        synthetic_rate_8h_pct = Decimal(str(args.funding_rate))
         funding_events = [
             FundingEvent(
                 ts=candle.ts,
-                funding_rate_8h=synthetic_rate * Decimal("8"),
-                hourly_rate=synthetic_rate,
+                funding_rate_8h_pct=synthetic_rate_8h_pct,
             )
             for candle in candles
         ]
@@ -285,7 +292,7 @@ def run_backtest(args: argparse.Namespace) -> int:
     hourly_rows: list[HourlyPnlRow] = []
 
     funding_index = 0
-    last_hourly_rate = Decimal("0")
+    last_funding_rate_8h_pct = Decimal("0")
     peak_funding_apr = Decimal("-999999")
 
     peak_account_value = capital
@@ -297,15 +304,15 @@ def run_backtest(args: argparse.Namespace) -> int:
     for candle in candles:
         eth_price = candle.close
         while funding_index < len(funding_events) and funding_events[funding_index].ts <= candle.ts:
-            last_hourly_rate = funding_events[funding_index].hourly_rate
+            last_funding_rate_8h_pct = funding_events[funding_index].funding_rate_8h_pct
             funding_index += 1
 
-        funding_apr = annualize_hourly_rate(last_hourly_rate)
+        funding_apr = annualize_8h_rate_pct(last_funding_rate_8h_pct)
         if funding_apr > peak_funding_apr:
             peak_funding_apr = funding_apr
 
         if not in_position and funding_apr >= entry_apr_threshold:
-            entry_fee = spot_qty * eth_price * fee_rate * Decimal("2")
+            entry_fee = (spot_qty * eth_price * fee_rate * Decimal("2")) * slippage_buffer
             margin_posted = spot_qty * eth_price * margin_rate
             cash -= entry_fee + margin_posted
             total_fees += entry_fee
@@ -330,10 +337,12 @@ def run_backtest(args: argparse.Namespace) -> int:
         if in_position:
             hours_in_position += 1
             in_position_aprs.append(funding_apr)
-            notional = spot_qty * eth_price
-            hourly_income = notional * last_hourly_rate
-            total_funding_income += hourly_income
-            cash += hourly_income
+            # Funding settles every 8 hours, not every hour.
+            if candle.ts.hour % 8 == 0:
+                notional = spot_qty * eth_price
+                settlement_income = notional * (last_funding_rate_8h_pct / Decimal("100"))
+                total_funding_income += settlement_income
+                cash += settlement_income
 
             assert entry_eth_price is not None
             spot_pnl = (eth_price - entry_eth_price) * spot_qty
@@ -342,7 +351,7 @@ def run_backtest(args: argparse.Namespace) -> int:
             unrealized_pnl = net_directional + total_funding_income
 
             if funding_apr < exit_apr_threshold:
-                exit_fee = spot_qty * eth_price * fee_rate * Decimal("2")
+                exit_fee = (spot_qty * eth_price * fee_rate * Decimal("2")) * slippage_buffer
                 cash += margin_posted
                 cash -= exit_fee
                 total_fees += exit_fee
@@ -392,7 +401,7 @@ def run_backtest(args: argparse.Namespace) -> int:
         spot_pnl = (eth_price - entry_eth_price) * spot_qty
         perp_pnl = (entry_eth_price - eth_price) * spot_qty
         net_directional = spot_pnl + perp_pnl
-        exit_fee = spot_qty * eth_price * fee_rate * Decimal("2")
+        exit_fee = (spot_qty * eth_price * fee_rate * Decimal("2")) * slippage_buffer
         cash += margin_posted
         cash -= exit_fee
         total_fees += exit_fee
@@ -403,7 +412,7 @@ def run_backtest(args: argparse.Namespace) -> int:
                 ts=candles[-1].ts,
                 action="force_exit",
                 eth_price=eth_price,
-                funding_apr=annualize_hourly_rate(last_hourly_rate),
+                funding_apr=annualize_8h_rate_pct(last_funding_rate_8h_pct),
                 margin_posted=Decimal("0"),
                 fee=exit_fee,
             )
@@ -430,6 +439,8 @@ def run_backtest(args: argparse.Namespace) -> int:
     print(f"Contract qty:           {contract_qty} ({quant_decimal(spot_qty, '0.00')} ETH)")
     print(f"Entry threshold:        {pct(entry_apr_threshold)} APR")
     print(f"Exit threshold:         {pct(exit_apr_threshold)} APR")
+    slippage_text = "none" if slippage_buffer == Decimal("1.0") else f"{slippage_buffer.quantize(Decimal('0.00'), rounding=ROUND_HALF_UP)}x"
+    print(f"Slippage buffer:        {slippage_text}")
     print("-" * 48)
     print(f"Entries:                {entries}")
     print(f"Exits:                  {exits}")
