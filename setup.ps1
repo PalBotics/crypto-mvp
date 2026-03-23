@@ -34,10 +34,10 @@ try {
     }
 }
 catch {
-    Write-FailAndExit "Python is not installed or not available on PATH." "Install Python 3.11+ from https://www.python.org/downloads/ and check 'Add Python to PATH', then re-run .\setup.ps1"
+    Write-FailAndExit "Python is not installed or not available on PATH." "Install Python 3.11+ from https://www.python.org/downloads/ and check 'Add Python to PATH', then re-run ./setup.ps1"
 }
 
-if ($pythonVersionOutput -notmatch "Python\s+(\d+)\.(\d+)\.(\d+)") {
+if ($pythonVersionOutput -notmatch 'Python[ ]+([0-9]+)[.]([0-9]+)[.]([0-9]+)') {
     Write-FailAndExit "Unable to parse Python version output: $pythonVersionOutput" "Open a new PowerShell window and run python --version to verify installation."
 }
 
@@ -45,7 +45,7 @@ $pyMajor = [int]$Matches[1]
 $pyMinor = [int]$Matches[2]
 
 if (($pyMajor -lt 3) -or ($pyMajor -eq 3 -and $pyMinor -lt 11)) {
-    Write-FailAndExit "Python version is too old ($pythonVersionOutput)." "Install Python 3.11+ from https://www.python.org/downloads/ and re-run .\setup.ps1"
+    Write-FailAndExit "Python version is too old ($pythonVersionOutput)." "Install Python 3.11+ from https://www.python.org/downloads/ and re-run ./setup.ps1"
 }
 
 Write-Success "Python detected: $pythonVersionOutput"
@@ -58,7 +58,7 @@ try {
     }
 }
 catch {
-    Write-FailAndExit "Docker Desktop is not running." "Please start Docker Desktop and re-run .\setup.ps1"
+    Write-FailAndExit "Docker Desktop is not running." "Please start Docker Desktop and re-run ./setup.ps1"
 }
 
 Write-Success "Docker Desktop is running"
@@ -78,13 +78,13 @@ Write-Success "Python venv created"
 
 # 4) Install Python dependencies
 try {
-    & .\.venv\Scripts\pip.exe install -e .
+    & ./.venv/Scripts/pip.exe install -e .
     if ($LASTEXITCODE -ne 0) {
         throw "pip install failed"
     }
 }
 catch {
-    Write-FailAndExit "Failed to install Python dependencies." "Check internet access and Python version compatibility, then run: .\.venv\Scripts\pip.exe install -e ."
+    Write-FailAndExit "Failed to install Python dependencies." "Check internet access and Python version compatibility, then run: ./.venv/Scripts/pip.exe install -e ."
 }
 
 Write-Success "Python dependencies installed"
@@ -105,13 +105,13 @@ Write-Success "PostgreSQL started"
 
 # 6) Run database migrations
 try {
-    & .\.venv\Scripts\python.exe -m alembic upgrade head
+    & ./.venv/Scripts/python.exe -m alembic upgrade head
     if ($LASTEXITCODE -ne 0) {
         throw "alembic upgrade head failed"
     }
 }
 catch {
-    Write-FailAndExit "Failed to apply database migrations." "Verify PostgreSQL is running and DB settings are valid, then run: .\.venv\Scripts\python.exe -m alembic upgrade head"
+    Write-FailAndExit "Failed to apply database migrations." "Verify PostgreSQL is running and DB settings are valid, then run: ./.venv/Scripts/python.exe -m alembic upgrade head"
 }
 
 Write-Success "Database migrations applied"
@@ -128,6 +128,6 @@ else {
 Write-Section "Setup complete!"
 Write-Host "Next steps:"
 Write-Host "  1. Copy your .env file to this folder (if not done)"
-Write-Host "  2. Run: .\start-crypto-mvp.bat"
+Write-Host "  2. Run: ./start-crypto-mvp.bat"
 Write-Host "  3. Open http://localhost:8000"
 Write-Host "============================================================"
