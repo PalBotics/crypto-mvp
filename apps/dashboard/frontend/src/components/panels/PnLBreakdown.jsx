@@ -3,7 +3,7 @@ import useRunSummary from '../../hooks/useRunSummary'
 import LoadingState, { ErrorState } from '../common/Loading'
 import { formatUSD, signColor } from '../../utils/format'
 
-export default function PnLBreakdown() {
+export default function PnLBreakdown({ middleContent = null }) {
   const pnl = usePnL()
   const summary = useRunSummary()
 
@@ -45,6 +45,8 @@ export default function PnLBreakdown() {
           </span>
         </div>
       </div>
+
+      {middleContent}
 
       <div className="card flex flex-col">
         <span className="label px-3 pt-3 pb-2">PnL Components</span>
