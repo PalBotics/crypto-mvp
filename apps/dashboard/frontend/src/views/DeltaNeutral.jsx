@@ -1,6 +1,12 @@
 import HedgeStatusPanel from '../components/panels/HedgeStatusPanel'
+import DnPnlSummary from '../components/panels/DnPnlSummary'
+import DnTradeHistory from '../components/panels/DnTradeHistory'
+import DnPnlChart from '../components/charts/DnPnlChart'
+import useDnAccount from '../hooks/useDnAccount'
 
 export default function DeltaNeutral() {
+  const { account, badge } = useDnAccount()
+
   return (
     <div className="flex flex-col gap-4 h-full">
       <div className="mb-2">
@@ -9,6 +15,9 @@ export default function DeltaNeutral() {
       </div>
 
       <HedgeStatusPanel />
+      <DnPnlSummary account={account} badge={badge} />
+      <DnTradeHistory account={account} />
+      <DnPnlChart account={account} />
     </div>
   )
 }

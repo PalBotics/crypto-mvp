@@ -1,4 +1,5 @@
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
+import { Component } from 'react'
 import {
   LayoutDashboard, LineChart, ArrowLeftRight,
   TrendingUp, Scale, HeartPulse, Settings,
@@ -22,6 +23,34 @@ const NAV = [
   { to: '/health',        icon: HeartPulse,      label: 'Health'         },
   { to: '/settings',      icon: Settings,        label: 'Settings'       },
 ]
+
+class RouteErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.routeKey !== this.props.routeKey && this.state.hasError) {
+      this.setState({ hasError: false })
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="card p-3 text-text-secondary text-sm">
+          This view failed to load. Please refresh or navigate away and back.
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 function Sidebar() {
   return (
@@ -107,13 +136,16 @@ function Header() {
 }
 
 export default function App() {
+  const location = useLocation()
+
   return (
     <div className="flex h-full bg-bg overflow-hidden">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header />
         <main className="flex-1 overflow-y-auto p-4 min-w-0 animate-fade-in">
-          <Routes>
+          <RouteErrorBoundary routeKey={location.pathname}>
+            <Routes>
             <Route path="/"              element={<Overview />}     />
             <Route path="/market"        element={<MarketData />}   />
             <Route path="/fills"         element={<Fills />}        />
@@ -121,7 +153,8 @@ export default function App() {
             <Route path="/delta-neutral" element={<DeltaNeutral />} />
             <Route path="/health"        element={<Health />}       />
             <Route path="/settings"      element={<SettingsView />} />
-          </Routes>
+            </Routes>
+          </RouteErrorBoundary>
         </main>
       </div>
     </div>
